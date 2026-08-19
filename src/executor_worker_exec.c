@@ -131,7 +131,7 @@ void executor_worker_handle_exec_request(
     const IpcHeader *header,
     const IpcExecRequestHeader *request
 ) {
-    const char *file = executor_worker_shell_locate();
+    const char *file = executor_worker_shell_path();
     const uint8_t *cmd_bytes = (const uint8_t *)(request + 1);
     const uint8_t *cwd_bytes = cmd_bytes + request->cmd_length;
     const uint8_t *input_bytes = cwd_bytes + request->cwd_length;
@@ -143,12 +143,11 @@ void executor_worker_handle_exec_request(
     int result;
 
 #ifdef _WIN32
+    ExecutorShellType shell_type = executor_worker_shell_type();
     char *arguments[7];
 #else
     char *arguments[4];
 #endif
-
-    if (file == NULL) return;
 
     command = calloc(1, sizeof(*command));
     cmd = malloc((size_t)request->cmd_length + 1);
@@ -188,7 +187,7 @@ void executor_worker_handle_exec_request(
     stdio[2].data.stream = (uv_stream_t *)&command->error;
 
 #ifdef _WIN32
-    if (_stricmp(strrchr(file, '\\') == NULL ? file : strrchr(file, '\\') + 1, "powershell.exe") == 0) {
+    if (shell_type == EXECUTOR_SHELL_POWERSHELL) {
         arguments[0] = (char *)file;
         arguments[1] = "-NoLogo";
         arguments[2] = "-NoProfile";
