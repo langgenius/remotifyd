@@ -4,12 +4,17 @@
 
 #include <stdbool.h>
 #include <stddef.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
 
 extern const unsigned char remotify_ca_bundle[];
 extern const size_t remotify_ca_bundle_length;
 
-static bool init_websocket(EventLoop *event_loop) {
+static bool init_websocket(EventLoop *event_loop, const char *credential) {
     CURL *websocket = curl_easy_init();
+    struct curl_slist *headers;
+    char *authorization;
     const struct curl_blob certificates = {
         .data = (void *)remotify_ca_bundle,
         .len = remotify_ca_bundle_length,
@@ -17,6 +22,18 @@ static bool init_websocket(EventLoop *event_loop) {
     };
 
     if (websocket == NULL) {
+        return false;
+    }
+
+    authorization = malloc(sizeof("Authorization: Bearer ") + strlen(credential));
+    sprintf(authorization, "Authorization: Bearer %s", credential);
+    headers = curl_slist_append(NULL, authorization);
+
+    /* curl_slist_append copied the complete header into its own allocation. */
+    free(authorization);
+
+    if (headers == NULL) {
+        curl_easy_cleanup(websocket);
         return false;
     }
 
@@ -30,6 +47,16 @@ static bool init_websocket(EventLoop *event_loop) {
      * a connected daemon must not be ended by a total-transfer timeout.
      */
     if (curl_easy_setopt(
+            websocket,
+            CURLOPT_HTTPHEADER,
+            headers
+        ) != CURLE_OK ||
+        curl_easy_setopt(
+            websocket,
+            CURLOPT_PRIVATE,
+            headers
+        ) != CURLE_OK ||
+        curl_easy_setopt(
             websocket,
             CURLOPT_CAINFO,
             NULL
@@ -55,6 +82,7 @@ static bool init_websocket(EventLoop *event_loop) {
             30L
         ) != CURLE_OK) {
         curl_easy_cleanup(websocket);
+        curl_slist_free_all(headers);
         return false;
     }
 
@@ -69,6 +97,7 @@ static bool init_websocket(EventLoop *event_loop) {
 static void cleanup_websocket(uv_timer_t *timer) {
     EventLoop *event_loop = timer->data;
     CURL *websocket = event_loop->websocket;
+    struct curl_slist *headers = NULL;
 
     if (websocket == NULL) {
         return;
@@ -86,7 +115,10 @@ static void cleanup_websocket(uv_timer_t *timer) {
         );
     }
 
+    /* CURLOPT_PRIVATE keeps the header list paired with its easy handle. */
+    curl_easy_getinfo(websocket, CURLINFO_PRIVATE, &headers);
     curl_easy_cleanup(websocket);
+    curl_slist_free_all(headers);
     event_loop->websocket = NULL;
 }
 
@@ -119,10 +151,10 @@ static void schedule_cleanup_websocket(EventLoop *event_loop) {
     }
 }
 
-static void remotify_connect(EventLoop *event_loop) {
+static void remotify_connect(EventLoop *event_loop, const char *credential) {
     int running_handles = 0;
 
-    if (!init_websocket(event_loop)) {
+    if (!init_websocket(event_loop, credential)) {
         return;
     }
 

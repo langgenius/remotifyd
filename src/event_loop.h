@@ -2,6 +2,7 @@
 #define REMOTIFY_EVENT_LOOP_H
 
 #include "ipc_types.h"
+#include "state.h"
 
 #include <stdbool.h>
 #include <curl/curl.h>
@@ -15,6 +16,7 @@
  */
 typedef struct EventLoop {
     uv_loop_t loop;
+    State state;
 
     /*
      * The single timer separates libcurl state advancement from WebSocket
