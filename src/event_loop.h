@@ -32,22 +32,19 @@ typedef struct EventLoop {
 
     IpcProcessCallbacks callbacks;
 
+    uv_poll_t websocket_poll;
+    curl_socket_t websocket_socket;
     CURLM *multi;
     CURL *websocket;
     uint64_t next_request_id;
 } EventLoop;
 
 int event_loop_run(EventLoop *event_loop);
-
-bool init_curl_multi(EventLoop *event_loop);
+void connect_remotify(uv_timer_t *timer);
+void schedule_cleanup_websocket(EventLoop *event_loop);
 
 void event_loop_executor_output_alloc(uv_handle_t *handle, size_t suggested_size, uv_buf_t *buffer);
 void event_loop_executor_output_read(uv_stream_t *stream, ssize_t received, const uv_buf_t *buffer);
 void event_loop_executor_handle(EventLoop *event_loop, const IpcHeader *header, const uint8_t *body);
-
-bool launch_executor(
-    EventLoop *event_loop,
-    const char *executable
-);
 
 #endif

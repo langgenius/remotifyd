@@ -1,6 +1,8 @@
 #include "event_loop.h"
 
+#include "api_base.h"
 #include "logger.h"
+#include "websocket_eventloop.h"
 
 #include <stdbool.h>
 #include <stddef.h>
@@ -10,6 +12,8 @@
 
 extern const unsigned char remotify_ca_bundle[];
 extern const size_t remotify_ca_bundle_length;
+
+static void schedule_connect_remotify(uv_handle_t *handle);
 
 static bool init_websocket(EventLoop *event_loop, const char *credential) {
     CURL *websocket = curl_easy_init();
@@ -47,6 +51,11 @@ static bool init_websocket(EventLoop *event_loop, const char *credential) {
      * a connected daemon must not be ended by a total-transfer timeout.
      */
     if (curl_easy_setopt(
+            websocket,
+            CURLOPT_URL,
+            get_websocket_url()
+        ) != CURLE_OK ||
+        curl_easy_setopt(
             websocket,
             CURLOPT_HTTPHEADER,
             headers
@@ -120,9 +129,41 @@ static void cleanup_websocket(uv_timer_t *timer) {
     curl_easy_cleanup(websocket);
     curl_slist_free_all(headers);
     event_loop->websocket = NULL;
+
+    /* Reconnect only after libuv has completely released its socket watcher. */
+    cleanup_websocket_resource(
+        event_loop,
+        schedule_connect_remotify
+    );
 }
 
-static void schedule_cleanup_websocket(EventLoop *event_loop) {
+static void schedule_connect_remotify(uv_handle_t *handle) {
+    EventLoop *event_loop = handle->data;
+    int result;
+
+    /* libuv has finished closing the handle, so its storage can now be reset. */
+    event_loop->websocket_poll = (uv_poll_t){0};
+
+    result = uv_timer_start(
+        &event_loop->timer,
+        connect_remotify,
+        5000,
+        0
+    );
+
+    if (result != 0) {
+        /*
+         * The process-owned timer remains valid for the EventLoop lifetime,
+         * so scheduling this fixed one-shot reconnect cannot normally fail.
+         */
+        logf_error(
+            "failed to schedule WebSocket reconnect: %s",
+            uv_strerror(result)
+        );
+    }
+}
+
+void schedule_cleanup_websocket(EventLoop *event_loop) {
     int result;
 
     /*
@@ -151,10 +192,13 @@ static void schedule_cleanup_websocket(EventLoop *event_loop) {
     }
 }
 
-static void remotify_connect(EventLoop *event_loop, const char *credential) {
+void connect_remotify(uv_timer_t *timer) {
+    EventLoop *event_loop = timer->data;
     int running_handles = 0;
+    CURLMcode result;
 
-    if (!init_websocket(event_loop, credential)) {
+    if (!init_websocket(event_loop, event_loop->state.token)) {
+        logf_error("failed to initialize WebSocket");
         return;
     }
 
@@ -172,25 +216,22 @@ static void remotify_connect(EventLoop *event_loop, const char *credential) {
      * timeout socket once lets libcurl begin the connection and publish the
      * sockets that the uv loop will subsequently watch.
      */
-    if (curl_multi_socket_action(
-            event_loop->multi,
-            CURL_SOCKET_TIMEOUT,
-            0,
-            &running_handles
-        ) != CURLM_OK) {
+    result = curl_multi_socket_action(
+        event_loop->multi,
+        CURL_SOCKET_TIMEOUT,
+        0,
+        &running_handles
+    );
+
+    if (result != CURLM_OK) {
         /* Keep easy-handle destruction outside the multi-action path. */
         schedule_cleanup_websocket(event_loop);
+        return;
     }
+
+    check_and_perform_socket_state_machine(event_loop);
 }
 
 int event_loop_run(EventLoop *event_loop) {
-    /*
-     * The multi handle must exist before the loop can run any WebSocket work.
-     * It then remains alive across every individual WebSocket connection.
-     */
-    if (!init_curl_multi(event_loop)) {
-        return 1;
-    }
-
     return uv_run(&event_loop->loop, UV_RUN_DEFAULT);
 }

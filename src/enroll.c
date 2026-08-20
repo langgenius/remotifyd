@@ -376,17 +376,11 @@ int process_enroll(int argc, char **argv) {
         return EXIT_FAILURE;
     }
 
-    if (curl_global_init(CURL_GLOBAL_DEFAULT) != CURLE_OK) {
-        logf_error("failed to initialize libcurl");
-        return EXIT_FAILURE;
-    }
-
     if (parsed_api_base != NULL) selected_api_base = parsed_api_base;
     endpoint = enroll_endpoint(selected_api_base);
 
     if (endpoint == NULL) {
         logf_error("invalid API base: %s", selected_api_base);
-        curl_global_cleanup();
         return EXIT_FAILURE;
     }
 
@@ -394,12 +388,10 @@ int process_enroll(int argc, char **argv) {
     if (parsed_api_base != NULL && !enroll_save_api_base(parsed_api_base)) {
         logf_error("failed to save API base");
         free(endpoint);
-        curl_global_cleanup();
         return EXIT_FAILURE;
     }
 
     result = enroll_device(selected_api_base, endpoint, token);
     free(endpoint);
-    curl_global_cleanup();
     return result;
 }

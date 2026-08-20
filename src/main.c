@@ -1,7 +1,10 @@
 #include "consts.h"
+#include "curl_multi.h"
 #include "enroll.h"
 #include "event_loop.h"
+#include "executor.h"
 #include "executor_worker.h"
+#include "init.h"
 #include "logger.h"
 
 #include <stdlib.h>
@@ -50,12 +53,36 @@ static int process_main(int argc, char **argv) {
      */
     event_loop.timer.data = &event_loop;
 
+    /* The WebSocket multi handle exists before any connection is scheduled. */
+    if (!init_curl_multi(&event_loop)) {
+        uv_loop_close(&event_loop.loop);
+        state_free(&event_loop.state);
+        return EXIT_FAILURE;
+    }
+
     /*
      * The parent delegates the complete child-process setup to its concrete
      * Executor owner.
      */
     if (!launch_executor(&event_loop, argv[0])) {
         uv_loop_close(&event_loop.loop);
+        state_free(&event_loop.state);
+        return EXIT_FAILURE;
+    }
+
+    /* The first connection begins in the first turn of the running uv loop. */
+    result = uv_timer_start(
+        &event_loop.timer,
+        connect_remotify,
+        0,
+        0
+    );
+
+    if (result != 0) {
+        logf_error(
+            "failed to schedule WebSocket connection: %s",
+            uv_strerror(result)
+        );
         state_free(&event_loop.state);
         return EXIT_FAILURE;
     }
@@ -72,15 +99,22 @@ static int process_executor(int argc, char **argv) {
 }
 
 int main(int argc, char **argv) {
+    int result;
+
     /*
-     * The release artifact contains two independent process entries. Select
-     * the role before either one creates any role-specific state or handles.
-    */
+     * Process-wide libraries have one lifetime regardless of the selected
+     * role. Role-specific state and event loops remain inside their entries.
+     */
+    if (!process_init()) return EXIT_FAILURE;
+
     if (argc == 2 && strcmp(argv[1], "executor") == 0) {
-        return process_executor(argc, argv);
+        result = process_executor(argc, argv);
     } else if (argc >= 2 && strcmp(argv[1], "enroll") == 0) {
-        return process_enroll(argc, argv);
+        result = process_enroll(argc, argv);
     } else {
-        return process_main(argc, argv);
+        result = process_main(argc, argv);
     }
+
+    process_cleanup();
+    return result;
 }

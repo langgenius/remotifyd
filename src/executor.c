@@ -1,8 +1,70 @@
-#include "event_loop.h"
+#include "executor.h"
 
 #include "logger.h"
 
 #include <stdbool.h>
+#include <stdlib.h>
+#include <string.h>
+
+static void executor_request_written(uv_write_t *write, int status) {
+    if (status < 0) {
+        logf_error(
+            "failed to write request to Executor: %s",
+            uv_strerror(status)
+        );
+    }
+
+    /* uv_write no longer uses the copied header or body after this callback. */
+    free(write);
+}
+
+bool dispatch_request_to_executor(
+    EventLoop *event_loop,
+    const IpcHeader *request,
+    const uint8_t *body
+) {
+    uv_write_t *write;
+    IpcHeader *header_bytes;
+    uint8_t *body_bytes;
+    uv_buf_t buffers[2];
+    unsigned int buffer_count;
+    int result;
+
+    /*
+     * uv_write is asynchronous, so the complete frame is copied after its
+     * request object and remains alive until executor_request_written runs.
+     */
+    write = malloc(sizeof(*write) + sizeof(*request) + request->body_length);
+
+    if (write == NULL) return false;
+
+    header_bytes = (IpcHeader *)(write + 1);
+    body_bytes = (uint8_t *)(header_bytes + 1);
+    *header_bytes = *request;
+
+    if (request->body_length != 0) {
+        memcpy(body_bytes, body, request->body_length);
+    }
+
+    buffers[0] = uv_buf_init((char *)header_bytes, sizeof(*header_bytes));
+    buffers[1] = uv_buf_init((char *)body_bytes, request->body_length);
+    buffer_count = request->body_length == 0 ? 1 : 2;
+
+    result = uv_write(
+        write,
+        (uv_stream_t *)&event_loop->executor_input,
+        buffers,
+        buffer_count,
+        executor_request_written
+    );
+
+    if (result != 0) {
+        free(write);
+        return false;
+    }
+
+    return true;
+}
 
 static void executor_exited(
     uv_process_t *executor,

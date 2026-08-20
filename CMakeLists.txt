@@ -29,6 +29,7 @@ add_custom_command(
 add_executable(remotifyd
     ${REMOTIFY_CA_BUNDLE_SOURCE}
     src/main.c
+    src/init.c
     src/api_base.c
     src/event_loop.c
     src/event_loop_executor_readloop.c
@@ -45,7 +46,9 @@ add_executable(remotifyd
     src/executor_worker_output.c
     src/enroll.c
     src/state.c
-    src/curl_muti.c
+    src/curl_multi.c
+    src/websocket_eventloop.c
+    src/websocket_readloop.c
     src/logger.c
 )
 
