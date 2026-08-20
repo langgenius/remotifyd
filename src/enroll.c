@@ -1,3 +1,8 @@
+/*
+ * This module is relatively independent and its function is simple, so almost
+ * all of this implementation was generated directly by GPT-5.6 Sol without a
+ * detailed system design. It should be reviewed and optimized later.
+ */
 #include "enroll.h"
 
 #include "api_base.h"
@@ -321,7 +326,8 @@ static int enroll_device(const char *api_base, const char *endpoint, const char 
         goto cleanup;
     }
 
-    printf("{\"device_code\":\"%s\"}\n", device_code_get());
+    logf_info("device enrolled: %s", device_code_get());
+    logf_info("successfully connected to remotify");
     result = EXIT_SUCCESS;
     goto cleanup;
 
