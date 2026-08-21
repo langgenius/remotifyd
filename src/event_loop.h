@@ -1,6 +1,8 @@
 #ifndef REMOTIFY_EVENT_LOOP_H
 #define REMOTIFY_EVENT_LOOP_H
 
+#include "circular_queue.h"
+#include "device_protocol_gen.h"
 #include "ipc_types.h"
 #include "state.h"
 
@@ -33,9 +35,18 @@ typedef struct EventLoop {
     IpcProcessCallbacks callbacks;
 
     uv_poll_t websocket_poll;
+
+    /*
+     * The queue preserves frame order while a partial curl write waits for
+     * UV_WRITABLE. The timer resumes its head outside the poll callback.
+     */
+    uv_timer_t websocket_send_timer;
+    CircularQueue websocket_send_queue;
     curl_socket_t websocket_socket;
     CURLM *multi;
     CURL *websocket;
+    uint8_t websocket_message[DEVICE_MAXIMUM_FRAME_BYTES];
+    size_t websocket_message_length;
     uint64_t next_request_id;
 } EventLoop;
 

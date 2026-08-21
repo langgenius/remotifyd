@@ -2,7 +2,26 @@
 
 #include "event_loop.h"
 #include "logger.h"
-#include "websocket_readloop.h"
+#include "websocket_ioloop.h"
+
+#if defined(_WIN32)
+#include <winsock2.h>
+#else
+#include <sys/socket.h>
+#endif
+
+void close_websocket_socket(EventLoop *event_loop) {
+    /*
+     * shutdown leaves the descriptor owned by libcurl, but makes the read side
+     * observe the connection end. Resource destruction remains in the single
+     * cleanup path reached by websocket_read.
+     */
+#if defined(_WIN32)
+    shutdown(event_loop->websocket_socket, SD_BOTH);
+#else
+    shutdown(event_loop->websocket_socket, SHUT_RDWR);
+#endif
+}
 
 void cleanup_websocket_resource(
     EventLoop *event_loop,
@@ -44,8 +63,8 @@ void check_and_perform_socket_state_machine(EventLoop *event_loop) {
          */
         result = uv_poll_start(
             &event_loop->websocket_poll,
-            UV_READABLE,
-            websocket_read
+            UV_READABLE | UV_DISCONNECT,
+            websocket_socket_event
         );
 
         if (result != 0) {
@@ -65,7 +84,7 @@ void check_and_perform_socket_state_machine(EventLoop *event_loop) {
  * status. The reported event triggers libcurl to continue its internal state
  * machine from the point where it previously had to wait for the socket.
  */
-static void websocket_socket_event(
+static void curl_socket_event(
     uv_poll_t *poll,
     int status,
     int events
@@ -228,7 +247,7 @@ int curl_socket_status_updated(
     result = uv_poll_start(
         &event_loop->websocket_poll,
         events,
-        websocket_socket_event
+        curl_socket_event
     );
 
     if (result != 0) {

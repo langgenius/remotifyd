@@ -46,9 +46,13 @@ add_executable(remotifyd
     src/executor_worker_output.c
     src/enroll.c
     src/state.c
+    src/circular_queue.c
     src/curl_multi.c
     src/websocket_eventloop.c
-    src/websocket_readloop.c
+    src/device_protocol_gen.c
+    src/websocket_decode.c
+    src/websocket_ioloop.c
+    src/websocket_send.c
     src/logger.c
 )
 

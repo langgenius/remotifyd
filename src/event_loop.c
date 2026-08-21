@@ -3,6 +3,7 @@
 #include "api_base.h"
 #include "logger.h"
 #include "websocket_eventloop.h"
+#include "websocket_send.h"
 
 #include <stdbool.h>
 #include <stddef.h>
@@ -112,6 +113,9 @@ static void cleanup_websocket(uv_timer_t *timer) {
         return;
     }
 
+    /* No queued write may run while this connection is being destroyed. */
+    uv_timer_stop(&event_loop->websocket_send_timer);
+
     /*
      * An easy handle must leave the multi handle before it is destroyed.
      * Keeping that order lets the long-lived multi handle release all state
@@ -129,6 +133,7 @@ static void cleanup_websocket(uv_timer_t *timer) {
     curl_easy_cleanup(websocket);
     curl_slist_free_all(headers);
     event_loop->websocket = NULL;
+    event_loop->websocket_message_length = 0;
 
     /* Reconnect only after libuv has completely released its socket watcher. */
     cleanup_websocket_resource(
@@ -140,6 +145,9 @@ static void cleanup_websocket(uv_timer_t *timer) {
 static void schedule_connect_remotify(uv_handle_t *handle) {
     EventLoop *event_loop = handle->data;
     int result;
+
+    /* Frames owned by the previous connection are never sent after reconnect. */
+    websocket_send_clear(event_loop);
 
     /* libuv has finished closing the handle, so its storage can now be reset. */
     event_loop->websocket_poll = (uv_poll_t){0};
