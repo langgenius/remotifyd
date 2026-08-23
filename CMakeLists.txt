@@ -80,7 +80,33 @@ endif()
 
 message(STATUS "remotifyd target: ${REMOTIFY_TARGET}")
 
+# Release artifacts run unattended and keep no local symbol files. Optimize
+# every CMake-built dependency for size, let LTO remove cross-object dead code,
+# and place remaining functions/data in sections the platform linker can drop.
+add_compile_options(
+    $<$<CONFIG:Release>:-Os>
+    $<$<CONFIG:Release>:-ffunction-sections>
+    $<$<CONFIG:Release>:-fdata-sections>
+)
+set(CMAKE_POLICY_DEFAULT_CMP0069 NEW)
+set(CMAKE_INTERPROCEDURAL_OPTIMIZATION_RELEASE ON)
+
+if(APPLE)
+    add_link_options($<$<CONFIG:Release>:-Wl,-dead_strip>)
+else()
+    add_link_options($<$<CONFIG:Release>:-Wl,--gc-sections>)
+endif()
+
 find_program(REMOTIFY_MAKE_EXECUTABLE NAMES gmake make REQUIRED)
+
+set(REMOTIFY_DEPENDENCY_ENV)
+if(CMAKE_BUILD_TYPE STREQUAL "Release")
+    # Autoconf dependencies do not inherit CMake's Release flags. Keep every
+    # supported encoding, but avoid debug/unused sections in their objects.
+    list(APPEND REMOTIFY_DEPENDENCY_ENV
+        "CFLAGS=-Os -DNDEBUG -ffunction-sections -fdata-sections"
+    )
+endif()
 
 # GNU libiconv is part of remotifyd on every platform. Building one pinned
 # implementation keeps streaming conversion behavior identical, including on
@@ -136,6 +162,7 @@ ExternalProject_Add(
         ${CMAKE_COMMAND} -E env
         CC=${CMAKE_C_COMPILER}
         "CPPFLAGS=${REMOTIFY_LIBICONV_CPPFLAGS}"
+        ${REMOTIFY_DEPENDENCY_ENV}
         <SOURCE_DIR>/configure
         ${REMOTIFY_LIBICONV_CONFIGURE_ARGS}
     BUILD_COMMAND ${REMOTIFY_MAKE_EXECUTABLE}
@@ -221,6 +248,8 @@ if(NOT WIN32)
         BINARY_DIR ${CMAKE_CURRENT_BINARY_DIR}/libidn2-build
         INSTALL_DIR ${REMOTIFY_LIBIDN2_INSTALL}
         CONFIGURE_COMMAND
+            ${CMAKE_COMMAND} -E env
+            ${REMOTIFY_DEPENDENCY_ENV}
             <SOURCE_DIR>/configure
             --prefix=<INSTALL_DIR>
             --disable-doc
@@ -389,6 +418,21 @@ add_executable(remotifyd
     src/websocket_send.c
     src/logger.c
 )
+
+if(CMAKE_BUILD_TYPE STREQUAL "Release")
+    # CMake's Release mode does not remove symbols emitted by every static
+    # dependency. Strip only the finished executable, after the linker has
+    # completed LTO and section garbage collection.
+    if(APPLE)
+        add_custom_command(TARGET remotifyd POST_BUILD
+            COMMAND ${CMAKE_STRIP} $<TARGET_FILE:remotifyd>
+        )
+    else()
+        add_custom_command(TARGET remotifyd POST_BUILD
+            COMMAND ${CMAKE_STRIP} --strip-all $<TARGET_FILE:remotifyd>
+        )
+    endif()
+endif()
 
 # iconv.h is installed by the external build, so the daemon's compilation must
 # not begin until that dependency has completed its install step.
