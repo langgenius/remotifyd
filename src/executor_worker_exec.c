@@ -30,21 +30,54 @@ bool executor_worker_exec_report(ExecutorCommand *command, IpcResponseType respo
 
     /* The converted stdout and stderr bytes are contiguous after this header. */
     memcpy(report->operation_id, command->operation_id, IPC_OPERATION_ID_LENGTH);
+    if (response_type != IPC_SINGLE) report->local_process_id = 0;
+    report->error_length = 0;
     return executor_worker_output(command->worker, &header, (const uint8_t *)report);
 }
 
 void executor_worker_exec_report_end(ExecutorCommand *command) {
     IpcExecReportHeader report = {0};
 
+    report.exit_code = command->exit_code;
     executor_worker_exec_report(command, IPC_END, &report);
 }
 
 static void executor_command_exited(uv_process_t *process, int64_t exit_status, int term_signal) {
-    (void)exit_status;
+    ExecutorCommand *command = process->data;
+
     (void)term_signal;
+
+    /* The two output EOF callbacks publish this value in the terminal report. */
+    command->exit_code = (int32_t)exit_status;
 
     /* stdout and stderr remain alive until their readers receive UV_EOF. */
     uv_close((uv_handle_t *)process, executor_worker_exec_handle_closed);
+}
+
+static void executor_worker_exec_report_failed(
+    ExecutorCommand *command,
+    int error
+) {
+    const char *diagnostic = uv_strerror(error);
+    size_t diagnostic_length = strlen(diagnostic);
+    IpcExecReportHeader *report = calloc(1, sizeof(*report) + diagnostic_length);
+    IpcHeader header = {
+        .request_id = command->request_id,
+        .body_length = (uint32_t)(sizeof(*report) + diagnostic_length),
+        .type = IPC_REQUEST_EXEC,
+        .response_type = IPC_SINGLE,
+        .status = 1
+    };
+
+    if (report == NULL) return;
+
+    memcpy(report->operation_id, command->operation_id, IPC_OPERATION_ID_LENGTH);
+    report->error_length = (uint32_t)diagnostic_length;
+    memcpy(report + 1, diagnostic, diagnostic_length);
+
+    /* Preserve libuv's concrete spawn failure in the existing Exec report body. */
+    executor_worker_output(command->worker, &header, (const uint8_t *)report);
+    free(report);
 }
 
 static void executor_command_input_written(uv_write_t *write, int status) {
@@ -226,6 +259,7 @@ void executor_worker_handle_exec_request(
 
     if (result != 0) {
         logf_error("failed to start command: %s", uv_strerror(result));
+        executor_worker_exec_report_failed(command, result);
         uv_close((uv_handle_t *)&command->input, executor_worker_exec_handle_closed);
         uv_close((uv_handle_t *)&command->output, executor_worker_exec_handle_closed);
         uv_close((uv_handle_t *)&command->error, executor_worker_exec_handle_closed);
@@ -233,6 +267,17 @@ void executor_worker_handle_exec_request(
     }
 
     command->open_handles++;
+
+    {
+        IpcExecReportHeader report = {
+            .local_process_id = (uint64_t)command->process.pid
+        };
+
+        /* The caller receives the real local process ID before any output. */
+        if (!executor_worker_exec_report(command, IPC_SINGLE, &report)) {
+            logf_error("failed to report the started command");
+        }
+    }
 
     /* uv_spawn has now created and connected both output pipes. */
     result = uv_read_start((uv_stream_t *)&command->output, executor_worker_exec_alloc, executor_worker_exec_stdout_read);

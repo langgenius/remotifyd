@@ -3,326 +3,302 @@
 
 #include <string.h>
 
-static bool device_read_varint(const uint8_t *bytes, size_t length, size_t *cursor, uint64_t *value) {
-    uint64_t decoded = 0;
+static bool read_varuint(const uint8_t *bytes, size_t length, size_t *cursor, uint64_t *value) {
+    uint64_t result = 0;
     unsigned int shift = 0;
-
     while (*cursor < length && shift < 64) {
         uint8_t current = bytes[(*cursor)++];
-
-        if (shift == 63 && current > 1) return false;
-        decoded |= (uint64_t)(current & 0x7f) << shift;
-
-        if ((current & 0x80) == 0) {
-            *value = decoded;
-            return true;
-        }
-
+        result |= (uint64_t)(current & 0x7f) << shift;
+        if ((current & 0x80) == 0) { *value = result; return true; }
         shift += 7;
     }
-
     return false;
 }
 
-static bool device_read_bytes(const uint8_t *bytes, size_t length, size_t *cursor, const uint8_t **value, size_t *value_length) {
+static bool write_varuint(uint8_t *bytes, size_t capacity, size_t *cursor, uint64_t value) {
+    do {
+        if (*cursor >= capacity) return false;
+        uint8_t current = (uint8_t)(value & 0x7f);
+        value >>= 7;
+        bytes[(*cursor)++] = value == 0 ? current : (uint8_t)(current | 0x80);
+    } while (value != 0);
+    return true;
+}
+
+static bool read_slice(const uint8_t *bytes, size_t length, size_t *cursor, const uint8_t **value, size_t *value_length) {
     uint64_t encoded_length;
-
-    if (!device_read_varint(bytes, length, cursor, &encoded_length)) return false;
+    if (!read_varuint(bytes, length, cursor, &encoded_length)) return false;
     if (encoded_length > length - *cursor) return false;
-
     *value = bytes + *cursor;
     *value_length = (size_t)encoded_length;
     *cursor += (size_t)encoded_length;
     return true;
 }
 
-static bool device_read_fixed(const uint8_t *bytes, size_t length, size_t *cursor, uint8_t *value, size_t value_length) {
-    if (value_length > length - *cursor) return false;
-    memcpy(value, bytes + *cursor, value_length);
-    *cursor += value_length;
-    return true;
-}
-
-static bool device_read_int32(const uint8_t *bytes, size_t length, size_t *cursor, int32_t *value) {
-    uint64_t encoded;
-
-    if (!device_read_varint(bytes, length, cursor, &encoded) || encoded > UINT32_MAX) return false;
-    *value = (encoded & 1) == 0 ? (int32_t)(encoded >> 1) : -(int32_t)((encoded >> 1) + 1);
-    return true;
-}
-
-static bool device_read_optional_int32(const uint8_t *bytes, size_t length, size_t *cursor, bool *present, int32_t *value) {
-    if (*cursor == length) return false;
-    if (bytes[*cursor] == 1) {
-        *present = false;
-        (*cursor)++;
-        return true;
-    }
-    if (bytes[*cursor] != 0) return false;
-
-    *present = true;
-    (*cursor)++;
-    return device_read_int32(bytes, length, cursor, value);
-}
-
-static bool device_write_varint(uint8_t *bytes, size_t capacity, size_t *cursor, uint64_t value) {
-    do {
-        if (*cursor == capacity) return false;
-        bytes[(*cursor)++] = (uint8_t)value | (value >= 0x80 ? 0x80 : 0);
-        value >>= 7;
-    } while (value != 0);
-
-    return true;
-}
-
-static bool device_write_bytes(uint8_t *bytes, size_t capacity, size_t *cursor, const uint8_t *value, size_t value_length) {
-    if (!device_write_varint(bytes, capacity, cursor, value_length)) return false;
+static bool write_slice(uint8_t *bytes, size_t capacity, size_t *cursor, const uint8_t *value, size_t value_length) {
+    if (!write_varuint(bytes, capacity, cursor, value_length)) return false;
     if (value_length > capacity - *cursor) return false;
     if (value_length != 0) memcpy(bytes + *cursor, value, value_length);
     *cursor += value_length;
     return true;
 }
 
-static bool device_write_fixed(uint8_t *bytes, size_t capacity, size_t *cursor, const uint8_t *value, size_t value_length) {
-    if (value_length > capacity - *cursor) return false;
-    memcpy(bytes + *cursor, value, value_length);
-    *cursor += value_length;
-    return true;
-}
-
-static bool device_write_int32(uint8_t *bytes, size_t capacity, size_t *cursor, int32_t value) {
-    uint32_t encoded = value < 0 ? (uint32_t)(-(int64_t)value * 2 - 1) : (uint32_t)value * 2;
-    return device_write_varint(bytes, capacity, cursor, encoded);
-}
-
-static bool device_write_optional_int32(uint8_t *bytes, size_t capacity, size_t *cursor, bool present, int32_t value) {
-    if (*cursor == capacity) return false;
-    bytes[(*cursor)++] = present ? 0 : 1;
-    return !present || device_write_int32(bytes, capacity, cursor, value);
-}
-
-static bool device_write_frame_header(uint8_t *frame, size_t capacity, uint16_t type_id, uint16_t version, uint32_t request_id) {
+static bool write_header(uint8_t *buffer, size_t capacity, uint16_t type_id, uint16_t version, uint32_t request_id, uint16_t status) {
     if (capacity < DEVICE_FRAME_HEADER_BYTES) return false;
-
-    frame[0] = (uint8_t)(type_id >> 8);
-    frame[1] = (uint8_t)type_id;
-    frame[2] = (uint8_t)(version >> 8);
-    frame[3] = (uint8_t)version;
-    frame[4] = (uint8_t)(request_id >> 24);
-    frame[5] = (uint8_t)(request_id >> 16);
-    frame[6] = (uint8_t)(request_id >> 8);
-    frame[7] = (uint8_t)request_id;
-    frame[8] = 0;
-    frame[9] = DEVICE_STATUS_OK;
+    buffer[0] = (uint8_t)(type_id >> 8); buffer[1] = (uint8_t)type_id;
+    buffer[2] = (uint8_t)(version >> 8); buffer[3] = (uint8_t)version;
+    buffer[4] = (uint8_t)(request_id >> 24); buffer[5] = (uint8_t)(request_id >> 16);
+    buffer[6] = (uint8_t)(request_id >> 8); buffer[7] = (uint8_t)request_id;
+    buffer[8] = (uint8_t)(status >> 8); buffer[9] = (uint8_t)status;
     return true;
 }
 
-bool device_decode_frame_header(const uint8_t *frame, size_t frame_length, DeviceFrameHeader *header) {
-    if (frame_length < DEVICE_FRAME_HEADER_BYTES || frame_length > DEVICE_MAXIMUM_FRAME_BYTES) return false;
+bool device_decode_frame_header(const uint8_t *message, size_t length, DeviceFrameHeader *header) {
+    if (length < DEVICE_FRAME_HEADER_BYTES) return false;
+    header->type_id = (uint16_t)((uint16_t)message[0] << 8 | message[1]);
+    header->version = (uint16_t)((uint16_t)message[2] << 8 | message[3]);
+    header->request_id = (uint32_t)message[4] << 24 | (uint32_t)message[5] << 16 | (uint32_t)message[6] << 8 | message[7];
+    header->status = (uint16_t)((uint16_t)message[8] << 8 | message[9]);
+    return true;
+}
 
-    header->type_id = (uint16_t)((uint16_t)frame[0] << 8 | frame[1]);
-    header->version = (uint16_t)((uint16_t)frame[2] << 8 | frame[3]);
-    header->request_id = (uint32_t)frame[4] << 24 | (uint32_t)frame[5] << 16 | (uint32_t)frame[6] << 8 | frame[7];
-    header->status = (DeviceStatus)((uint16_t)frame[8] << 8 | frame[9]);
+bool device_encode_failure(uint8_t *buffer, size_t capacity, size_t *length, uint16_t type_id, uint16_t version, uint32_t request_id, const uint8_t *diagnostic, size_t diagnostic_length) {
+    size_t cursor = DEVICE_FRAME_HEADER_BYTES;
+    if (!write_header(buffer, capacity, type_id, version, request_id, DEVICE_STATUS_FAILED)) return false;
+    if (!write_slice(buffer, capacity, &cursor, diagnostic, diagnostic_length)) return false;
+    *length = cursor;
     return true;
 }
 
 bool device_decode_exec_run_request_v1(const uint8_t *payload, size_t payload_length, DeviceExecRunRequestV1 *message) {
     size_t cursor = 0;
-
-    if (!device_read_bytes(payload, payload_length, &cursor, &message->operation_id, &message->operation_id_length)) return false;
-    if (!device_read_bytes(payload, payload_length, &cursor, &message->cmd, &message->cmd_length)) return false;
-    if (!device_read_bytes(payload, payload_length, &cursor, &message->cwd, &message->cwd_length)) return false;
-    if (!device_read_bytes(payload, payload_length, &cursor, &message->standard_input, &message->standard_input_length)) return false;
-    if (!device_read_bytes(payload, payload_length, &cursor, &message->env, &message->env_length)) return false;
+    uint64_t number;
+    if (!read_slice(payload, payload_length, &cursor, &message->operation_id, &message->operation_id_length)) return false;
+    if (!read_slice(payload, payload_length, &cursor, &message->cmd, &message->cmd_length)) return false;
+    if (!read_slice(payload, payload_length, &cursor, &message->cwd, &message->cwd_length)) return false;
+    if (!read_slice(payload, payload_length, &cursor, &message->standard_input, &message->standard_input_length)) return false;
+    if (!read_slice(payload, payload_length, &cursor, &message->env, &message->env_length)) return false;
+    (void)number;
     return cursor == payload_length;
 }
 
-bool device_encode_exec_run_request_v1(uint8_t *frame, size_t frame_capacity, size_t *frame_length, uint32_t request_id, const DeviceExecRunRequestV1 *message) {
+bool device_encode_exec_run_request_v1(uint8_t *buffer, size_t capacity, size_t *length, uint32_t request_id, const DeviceExecRunRequestV1 *message) {
     size_t cursor = DEVICE_FRAME_HEADER_BYTES;
-
-    if (!device_write_frame_header(frame, frame_capacity, 1, 1, request_id)) return false;
-    if (!device_write_bytes(frame, frame_capacity, &cursor, message->operation_id, message->operation_id_length)) return false;
-    if (!device_write_bytes(frame, frame_capacity, &cursor, message->cmd, message->cmd_length)) return false;
-    if (!device_write_bytes(frame, frame_capacity, &cursor, message->cwd, message->cwd_length)) return false;
-    if (!device_write_bytes(frame, frame_capacity, &cursor, message->standard_input, message->standard_input_length)) return false;
-    if (!device_write_bytes(frame, frame_capacity, &cursor, message->env, message->env_length)) return false;
-    *frame_length = cursor;
+    if (!write_header(buffer, capacity, 1, 1, request_id, DEVICE_STATUS_OK)) return false;
+    if (!write_slice(buffer, capacity, &cursor, message->operation_id, message->operation_id_length)) return false;
+    if (!write_slice(buffer, capacity, &cursor, message->cmd, message->cmd_length)) return false;
+    if (!write_slice(buffer, capacity, &cursor, message->cwd, message->cwd_length)) return false;
+    if (!write_slice(buffer, capacity, &cursor, message->standard_input, message->standard_input_length)) return false;
+    if (!write_slice(buffer, capacity, &cursor, message->env, message->env_length)) return false;
+    *length = cursor;
     return true;
 }
 
-bool device_decode_exec_run_response_v1(const uint8_t *payload, size_t payload_length) {
-    (void)payload;
-    return payload_length == 0;
-}
-
-bool device_encode_exec_run_response_v1(uint8_t *frame, size_t frame_capacity, size_t *frame_length, uint32_t request_id) {
-    size_t cursor = DEVICE_FRAME_HEADER_BYTES;
-
-    if (!device_write_frame_header(frame, frame_capacity, 2, 1, request_id)) return false;
-    *frame_length = cursor;
-    return true;
-}
-
-bool device_decode_exec_report_request_v1(const uint8_t *payload, size_t payload_length, DeviceExecReportRequestV1 *message) {
+bool device_decode_exec_report_v1(const uint8_t *payload, size_t payload_length, DeviceExecReportV1 *message) {
     size_t cursor = 0;
-
-    if (!device_read_bytes(payload, payload_length, &cursor, &message->operation_id, &message->operation_id_length)) return false;
-    if (!device_read_bytes(payload, payload_length, &cursor, &message->stdout, &message->stdout_length)) return false;
-    if (!device_read_bytes(payload, payload_length, &cursor, &message->stderr, &message->stderr_length)) return false;
-    if (!device_read_optional_int32(payload, payload_length, &cursor, &message->has_exit_code, &message->exit_code)) return false;
+    uint64_t number;
+    if (!read_slice(payload, payload_length, &cursor, &message->operation_id, &message->operation_id_length)) return false;
+    if (!read_slice(payload, payload_length, &cursor, &message->local_process_id, &message->local_process_id_length)) return false;
+    if (!read_slice(payload, payload_length, &cursor, &message->stdout, &message->stdout_length)) return false;
+    if (!read_slice(payload, payload_length, &cursor, &message->stderr, &message->stderr_length)) return false;
+    if (cursor >= payload_length || (payload[cursor] != 0 && payload[cursor] != 1)) return false;
+    message->has_exit_code = payload[cursor++] == 0;
+    if (message->has_exit_code) {
+        if (!read_varuint(payload, payload_length, &cursor, &number)) return false;
+        message->exit_code = (int32_t)((number >> 1) ^ (uint64_t)-(int64_t)(number & 1));
+    }
+    (void)number;
     return cursor == payload_length;
 }
 
-bool device_encode_exec_report_request_v1(uint8_t *frame, size_t frame_capacity, size_t *frame_length, uint32_t request_id, const DeviceExecReportRequestV1 *message) {
+bool device_encode_exec_report_v1(uint8_t *buffer, size_t capacity, size_t *length, uint32_t request_id, const DeviceExecReportV1 *message) {
     size_t cursor = DEVICE_FRAME_HEADER_BYTES;
-
-    if (!device_write_frame_header(frame, frame_capacity, 3, 1, request_id)) return false;
-    if (!device_write_bytes(frame, frame_capacity, &cursor, message->operation_id, message->operation_id_length)) return false;
-    if (!device_write_bytes(frame, frame_capacity, &cursor, message->stdout, message->stdout_length)) return false;
-    if (!device_write_bytes(frame, frame_capacity, &cursor, message->stderr, message->stderr_length)) return false;
-    if (!device_write_optional_int32(frame, frame_capacity, &cursor, message->has_exit_code, message->exit_code)) return false;
-    *frame_length = cursor;
+    if (!write_header(buffer, capacity, 2, 1, request_id, DEVICE_STATUS_OK)) return false;
+    if (!write_slice(buffer, capacity, &cursor, message->operation_id, message->operation_id_length)) return false;
+    if (!write_slice(buffer, capacity, &cursor, message->local_process_id, message->local_process_id_length)) return false;
+    if (!write_slice(buffer, capacity, &cursor, message->stdout, message->stdout_length)) return false;
+    if (!write_slice(buffer, capacity, &cursor, message->stderr, message->stderr_length)) return false;
+    if (cursor >= capacity) return false;
+    buffer[cursor++] = message->has_exit_code ? 0 : 1;
+    if (message->has_exit_code && !write_varuint(buffer, capacity, &cursor, ((uint32_t)message->exit_code << 1) ^ (uint32_t)(message->exit_code >> 31))) return false;
+    *length = cursor;
     return true;
 }
 
-bool device_decode_exec_report_response_v1(const uint8_t *payload, size_t payload_length) {
+bool device_decode_heartbeat_request_v1(const uint8_t *payload, size_t payload_length, DeviceHeartbeatRequestV1 *message) {
+    size_t cursor = 0;
+    uint64_t number;
     (void)payload;
-    return payload_length == 0;
+    (void)message;
+    (void)number;
+    return cursor == payload_length;
 }
 
-bool device_encode_exec_report_response_v1(uint8_t *frame, size_t frame_capacity, size_t *frame_length, uint32_t request_id) {
+bool device_encode_heartbeat_request_v1(uint8_t *buffer, size_t capacity, size_t *length, uint32_t request_id, const DeviceHeartbeatRequestV1 *message) {
     size_t cursor = DEVICE_FRAME_HEADER_BYTES;
+    (void)message;
+    if (!write_header(buffer, capacity, 3, 1, request_id, DEVICE_STATUS_OK)) return false;
+    *length = cursor;
+    return true;
+}
 
-    if (!device_write_frame_header(frame, frame_capacity, 4, 1, request_id)) return false;
-    *frame_length = cursor;
+bool device_decode_heartbeat_response_v1(const uint8_t *payload, size_t payload_length, DeviceHeartbeatResponseV1 *message) {
+    size_t cursor = 0;
+    uint64_t number;
+    (void)payload;
+    (void)message;
+    (void)number;
+    return cursor == payload_length;
+}
+
+bool device_encode_heartbeat_response_v1(uint8_t *buffer, size_t capacity, size_t *length, uint32_t request_id, const DeviceHeartbeatResponseV1 *message) {
+    size_t cursor = DEVICE_FRAME_HEADER_BYTES;
+    (void)message;
+    if (!write_header(buffer, capacity, 4, 1, request_id, DEVICE_STATUS_OK)) return false;
+    *length = cursor;
     return true;
 }
 
 bool device_decode_file_stat_request_v1(const uint8_t *payload, size_t payload_length, DeviceFileStatRequestV1 *message) {
     size_t cursor = 0;
-
-    if (!device_read_bytes(payload, payload_length, &cursor, &message->path, &message->path_length)) return false;
+    uint64_t number;
+    if (!read_slice(payload, payload_length, &cursor, &message->path, &message->path_length)) return false;
+    (void)number;
     return cursor == payload_length;
 }
 
-bool device_encode_file_stat_request_v1(uint8_t *frame, size_t frame_capacity, size_t *frame_length, uint32_t request_id, const DeviceFileStatRequestV1 *message) {
+bool device_encode_file_stat_request_v1(uint8_t *buffer, size_t capacity, size_t *length, uint32_t request_id, const DeviceFileStatRequestV1 *message) {
     size_t cursor = DEVICE_FRAME_HEADER_BYTES;
-
-    if (!device_write_frame_header(frame, frame_capacity, 5, 1, request_id)) return false;
-    if (!device_write_bytes(frame, frame_capacity, &cursor, message->path, message->path_length)) return false;
-    *frame_length = cursor;
+    if (!write_header(buffer, capacity, 5, 1, request_id, DEVICE_STATUS_OK)) return false;
+    if (!write_slice(buffer, capacity, &cursor, message->path, message->path_length)) return false;
+    *length = cursor;
     return true;
 }
 
 bool device_decode_file_stat_response_v1(const uint8_t *payload, size_t payload_length, DeviceFileStatResponseV1 *message) {
     size_t cursor = 0;
-
-    if (!device_read_varint(payload, payload_length, &cursor, &message->size_bytes)) return false;
-    if (!device_read_fixed(payload, payload_length, &cursor, message->sha256, 32)) return false;
+    uint64_t number;
+    if (!read_varuint(payload, payload_length, &cursor, &message->size_bytes)) return false;
+    if (payload_length - cursor < 32) return false;
+    memcpy(message->sha256, payload + cursor, 32);
+    cursor += 32;
+    (void)number;
     return cursor == payload_length;
 }
 
-bool device_encode_file_stat_response_v1(uint8_t *frame, size_t frame_capacity, size_t *frame_length, uint32_t request_id, const DeviceFileStatResponseV1 *message) {
+bool device_encode_file_stat_response_v1(uint8_t *buffer, size_t capacity, size_t *length, uint32_t request_id, const DeviceFileStatResponseV1 *message) {
     size_t cursor = DEVICE_FRAME_HEADER_BYTES;
-
-    if (!device_write_frame_header(frame, frame_capacity, 6, 1, request_id)) return false;
-    if (!device_write_varint(frame, frame_capacity, &cursor, message->size_bytes)) return false;
-    if (!device_write_fixed(frame, frame_capacity, &cursor, message->sha256, 32)) return false;
-    *frame_length = cursor;
+    if (!write_header(buffer, capacity, 6, 1, request_id, DEVICE_STATUS_OK)) return false;
+    if (!write_varuint(buffer, capacity, &cursor, message->size_bytes)) return false;
+    if (capacity - cursor < 32) return false;
+    memcpy(buffer + cursor, message->sha256, 32);
+    cursor += 32;
+    *length = cursor;
     return true;
 }
 
 bool device_decode_file_upload_request_v1(const uint8_t *payload, size_t payload_length, DeviceFileUploadRequestV1 *message) {
     size_t cursor = 0;
-
-    if (!device_read_bytes(payload, payload_length, &cursor, &message->path, &message->path_length)) return false;
-    if (!device_read_bytes(payload, payload_length, &cursor, &message->transfer_ticket, &message->transfer_ticket_length)) return false;
+    uint64_t number;
+    if (!read_slice(payload, payload_length, &cursor, &message->path, &message->path_length)) return false;
+    if (!read_slice(payload, payload_length, &cursor, &message->transfer_ticket, &message->transfer_ticket_length)) return false;
+    (void)number;
     return cursor == payload_length;
 }
 
-bool device_encode_file_upload_request_v1(uint8_t *frame, size_t frame_capacity, size_t *frame_length, uint32_t request_id, const DeviceFileUploadRequestV1 *message) {
+bool device_encode_file_upload_request_v1(uint8_t *buffer, size_t capacity, size_t *length, uint32_t request_id, const DeviceFileUploadRequestV1 *message) {
     size_t cursor = DEVICE_FRAME_HEADER_BYTES;
-
-    if (!device_write_frame_header(frame, frame_capacity, 7, 1, request_id)) return false;
-    if (!device_write_bytes(frame, frame_capacity, &cursor, message->path, message->path_length)) return false;
-    if (!device_write_bytes(frame, frame_capacity, &cursor, message->transfer_ticket, message->transfer_ticket_length)) return false;
-    *frame_length = cursor;
+    if (!write_header(buffer, capacity, 7, 1, request_id, DEVICE_STATUS_OK)) return false;
+    if (!write_slice(buffer, capacity, &cursor, message->path, message->path_length)) return false;
+    if (!write_slice(buffer, capacity, &cursor, message->transfer_ticket, message->transfer_ticket_length)) return false;
+    *length = cursor;
     return true;
 }
 
-bool device_decode_file_upload_response_v1(const uint8_t *payload, size_t payload_length) {
+bool device_decode_file_upload_response_v1(const uint8_t *payload, size_t payload_length, DeviceFileUploadResponseV1 *message) {
+    size_t cursor = 0;
+    uint64_t number;
     (void)payload;
-    return payload_length == 0;
+    (void)message;
+    (void)number;
+    return cursor == payload_length;
 }
 
-bool device_encode_file_upload_response_v1(uint8_t *frame, size_t frame_capacity, size_t *frame_length, uint32_t request_id) {
+bool device_encode_file_upload_response_v1(uint8_t *buffer, size_t capacity, size_t *length, uint32_t request_id, const DeviceFileUploadResponseV1 *message) {
     size_t cursor = DEVICE_FRAME_HEADER_BYTES;
-
-    if (!device_write_frame_header(frame, frame_capacity, 8, 1, request_id)) return false;
-    *frame_length = cursor;
+    (void)message;
+    if (!write_header(buffer, capacity, 8, 1, request_id, DEVICE_STATUS_OK)) return false;
+    *length = cursor;
     return true;
 }
 
 bool device_decode_file_download_request_v1(const uint8_t *payload, size_t payload_length, DeviceFileDownloadRequestV1 *message) {
     size_t cursor = 0;
-
-    if (!device_read_bytes(payload, payload_length, &cursor, &message->path, &message->path_length)) return false;
-    if (!device_read_bytes(payload, payload_length, &cursor, &message->transfer_ticket, &message->transfer_ticket_length)) return false;
+    uint64_t number;
+    if (!read_slice(payload, payload_length, &cursor, &message->path, &message->path_length)) return false;
+    if (!read_slice(payload, payload_length, &cursor, &message->transfer_ticket, &message->transfer_ticket_length)) return false;
+    (void)number;
     return cursor == payload_length;
 }
 
-bool device_encode_file_download_request_v1(uint8_t *frame, size_t frame_capacity, size_t *frame_length, uint32_t request_id, const DeviceFileDownloadRequestV1 *message) {
+bool device_encode_file_download_request_v1(uint8_t *buffer, size_t capacity, size_t *length, uint32_t request_id, const DeviceFileDownloadRequestV1 *message) {
     size_t cursor = DEVICE_FRAME_HEADER_BYTES;
-
-    if (!device_write_frame_header(frame, frame_capacity, 9, 1, request_id)) return false;
-    if (!device_write_bytes(frame, frame_capacity, &cursor, message->path, message->path_length)) return false;
-    if (!device_write_bytes(frame, frame_capacity, &cursor, message->transfer_ticket, message->transfer_ticket_length)) return false;
-    *frame_length = cursor;
+    if (!write_header(buffer, capacity, 9, 1, request_id, DEVICE_STATUS_OK)) return false;
+    if (!write_slice(buffer, capacity, &cursor, message->path, message->path_length)) return false;
+    if (!write_slice(buffer, capacity, &cursor, message->transfer_ticket, message->transfer_ticket_length)) return false;
+    *length = cursor;
     return true;
 }
 
-bool device_decode_file_download_response_v1(const uint8_t *payload, size_t payload_length) {
+bool device_decode_file_download_response_v1(const uint8_t *payload, size_t payload_length, DeviceFileDownloadResponseV1 *message) {
+    size_t cursor = 0;
+    uint64_t number;
     (void)payload;
-    return payload_length == 0;
+    (void)message;
+    (void)number;
+    return cursor == payload_length;
 }
 
-bool device_encode_file_download_response_v1(uint8_t *frame, size_t frame_capacity, size_t *frame_length, uint32_t request_id) {
+bool device_encode_file_download_response_v1(uint8_t *buffer, size_t capacity, size_t *length, uint32_t request_id, const DeviceFileDownloadResponseV1 *message) {
     size_t cursor = DEVICE_FRAME_HEADER_BYTES;
-
-    if (!device_write_frame_header(frame, frame_capacity, 10, 1, request_id)) return false;
-    *frame_length = cursor;
+    (void)message;
+    if (!write_header(buffer, capacity, 10, 1, request_id, DEVICE_STATUS_OK)) return false;
+    *length = cursor;
     return true;
 }
 
 bool device_decode_apply_patch_request_v1(const uint8_t *payload, size_t payload_length, DeviceApplyPatchRequestV1 *message) {
     size_t cursor = 0;
-
-    if (!device_read_bytes(payload, payload_length, &cursor, &message->patch, &message->patch_length)) return false;
-    if (!device_read_bytes(payload, payload_length, &cursor, &message->cwd, &message->cwd_length)) return false;
+    uint64_t number;
+    if (!read_slice(payload, payload_length, &cursor, &message->patch, &message->patch_length)) return false;
+    if (!read_slice(payload, payload_length, &cursor, &message->cwd, &message->cwd_length)) return false;
+    (void)number;
     return cursor == payload_length;
 }
 
-bool device_encode_apply_patch_request_v1(uint8_t *frame, size_t frame_capacity, size_t *frame_length, uint32_t request_id, const DeviceApplyPatchRequestV1 *message) {
+bool device_encode_apply_patch_request_v1(uint8_t *buffer, size_t capacity, size_t *length, uint32_t request_id, const DeviceApplyPatchRequestV1 *message) {
     size_t cursor = DEVICE_FRAME_HEADER_BYTES;
-
-    if (!device_write_frame_header(frame, frame_capacity, 11, 1, request_id)) return false;
-    if (!device_write_bytes(frame, frame_capacity, &cursor, message->patch, message->patch_length)) return false;
-    if (!device_write_bytes(frame, frame_capacity, &cursor, message->cwd, message->cwd_length)) return false;
-    *frame_length = cursor;
+    if (!write_header(buffer, capacity, 11, 1, request_id, DEVICE_STATUS_OK)) return false;
+    if (!write_slice(buffer, capacity, &cursor, message->patch, message->patch_length)) return false;
+    if (!write_slice(buffer, capacity, &cursor, message->cwd, message->cwd_length)) return false;
+    *length = cursor;
     return true;
 }
 
-bool device_decode_apply_patch_response_v1(const uint8_t *payload, size_t payload_length) {
+bool device_decode_apply_patch_response_v1(const uint8_t *payload, size_t payload_length, DeviceApplyPatchResponseV1 *message) {
+    size_t cursor = 0;
+    uint64_t number;
     (void)payload;
-    return payload_length == 0;
+    (void)message;
+    (void)number;
+    return cursor == payload_length;
 }
 
-bool device_encode_apply_patch_response_v1(uint8_t *frame, size_t frame_capacity, size_t *frame_length, uint32_t request_id) {
+bool device_encode_apply_patch_response_v1(uint8_t *buffer, size_t capacity, size_t *length, uint32_t request_id, const DeviceApplyPatchResponseV1 *message) {
     size_t cursor = DEVICE_FRAME_HEADER_BYTES;
-
-    if (!device_write_frame_header(frame, frame_capacity, 12, 1, request_id)) return false;
-    *frame_length = cursor;
+    (void)message;
+    if (!write_header(buffer, capacity, 12, 1, request_id, DEVICE_STATUS_OK)) return false;
+    *length = cursor;
     return true;
 }
 

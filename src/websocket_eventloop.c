@@ -3,6 +3,7 @@
 #include "event_loop.h"
 #include "logger.h"
 #include "websocket_ioloop.h"
+#include "websocket_send.h"
 
 #if defined(_WIN32)
 #include <winsock2.h>
@@ -27,6 +28,16 @@ void cleanup_websocket_resource(
     EventLoop *event_loop,
     uv_close_cb after_cleaned_cb
 ) {
+    if (event_loop->websocket_socket == CURL_SOCKET_BAD) {
+        /*
+         * No poll was initialized, so the cleanup continuation can run now.
+         * It only reads handle->data, which the process-owned timer also
+         * carries for this EventLoop.
+         */
+        after_cleaned_cb((uv_handle_t *)&event_loop->timer);
+        return;
+    }
+
     uv_poll_stop(&event_loop->websocket_poll);
     uv_close(
         (uv_handle_t *)&event_loop->websocket_poll,
@@ -34,7 +45,7 @@ void cleanup_websocket_resource(
     );
 }
 
-void check_and_perform_socket_state_machine(EventLoop *event_loop) {
+void check_websocket_connect_result(EventLoop *event_loop) {
     CURLMsg *message;
     int messages_left;
     int result;
@@ -73,6 +84,27 @@ void check_and_perform_socket_state_machine(EventLoop *event_loop) {
                 uv_strerror(result)
             );
             schedule_cleanup_websocket(event_loop);
+            return;
+        }
+
+        /*
+         * Heartbeat is an application request that refreshes the authenticated
+         * device route. It uses the same ordered asynchronous queue as every
+         * other WebSocket message and never writes the socket directly.
+         */
+        result = uv_timer_start(
+            &event_loop->heartbeat_timer,
+            websocket_send_heartbeat,
+            15000,
+            15000
+        );
+
+        if (result != 0) {
+            /* This process-owned timer remains valid for EventLoop's lifetime. */
+            logf_error(
+                "failed to start Heartbeat timer: %s",
+                uv_strerror(result)
+            );
         }
 
         return;
@@ -80,11 +112,10 @@ void check_and_perform_socket_state_machine(EventLoop *event_loop) {
 }
 
 /*
- * libuv calls this function when it detects that websocket_poll has changed
- * status. The reported event triggers libcurl to continue its internal state
- * machine from the point where it previously had to wait for the socket.
+ * Before WebSocket Upgrade completes, readiness on the connection socket
+ * tells libcurl that TCP or TLS can continue.
  */
-static void curl_socket_event(
+static void websocket_connect_socket_ready(
     uv_poll_t *poll,
     int status,
     int events
@@ -121,7 +152,47 @@ static void curl_socket_event(
         return;
     }
 
-    check_and_perform_socket_state_machine(event_loop);
+    check_websocket_connect_result(event_loop);
+}
+
+/*
+ * The multi-owned socket never contains WebSocket payload. Readability only
+ * means that libcurl can resume work which waited for an internal event, such
+ * as completion of threaded DNS resolution.
+ */
+static void curl_resume_socket_ready(
+    uv_poll_t *poll,
+    int status,
+    int events
+) {
+    EventLoop *event_loop = poll->data;
+    int running_handles = 0;
+    int action;
+    CURLMcode result;
+
+    (void)events;
+
+    action = status < 0
+        ? CURL_CSELECT_ERR
+        : CURL_CSELECT_IN;
+
+    result = curl_multi_socket_action(
+        event_loop->multi,
+        event_loop->curl_resume_socket,
+        action,
+        &running_handles
+    );
+
+    if (result != CURLM_OK) {
+        logf_error(
+            "failed to resume curl: %s",
+            curl_multi_strerror(result)
+        );
+        schedule_cleanup_websocket(event_loop);
+        return;
+    }
+
+    check_websocket_connect_result(event_loop);
 }
 
 static void websocket_timeout(uv_timer_t *timer) {
@@ -146,7 +217,7 @@ static void websocket_timeout(uv_timer_t *timer) {
         return;
     }
 
-    check_and_perform_socket_state_machine(event_loop);
+    check_websocket_connect_result(event_loop);
 }
 
 int curl_timer_status_updated(
@@ -182,7 +253,7 @@ int curl_timer_status_updated(
     return 0;
 }
 
-int curl_socket_status_updated(
+int curl_socket_watch_requested(
     CURL *easy,
     curl_socket_t socket,
     int action,
@@ -193,7 +264,49 @@ int curl_socket_status_updated(
     int events;
     int result;
 
-    (void)easy;
+    /* An internal easy handle identifies the socket which resumes CURLM. */
+    if (easy != event_loop->websocket) {
+        if (action == CURL_POLL_REMOVE) {
+            uv_poll_stop(&event_loop->curl_resume_poll);
+            return 0;
+        }
+
+        /* CURLM owns this socket, so its uv poll is initialized only once. */
+        if (event_loop->curl_resume_socket == CURL_SOCKET_BAD) {
+            result = uv_poll_init_socket(
+                &event_loop->loop,
+                &event_loop->curl_resume_poll,
+                socket
+            );
+
+            if (result != 0) {
+                logf_error(
+                    "failed to initialize curl resume poll: %s",
+                    uv_strerror(result)
+                );
+                return -1;
+            }
+
+            event_loop->curl_resume_socket = socket;
+            event_loop->curl_resume_poll.data = event_loop;
+        }
+
+        result = uv_poll_start(
+            &event_loop->curl_resume_poll,
+            UV_READABLE,
+            curl_resume_socket_ready
+        );
+
+        if (result != 0) {
+            logf_error(
+                "failed to watch curl resume socket: %s",
+                uv_strerror(result)
+            );
+            return -1;
+        }
+
+        return 0;
+    }
 
     /* REMOVE can arrive after cleanup has already cleared socket_context. */
     if (action == CURL_POLL_REMOVE) {
@@ -209,7 +322,6 @@ int curl_socket_status_updated(
      * socket_context is only used to identify the first notification.
      */
     if (socket_context == NULL) {
-        event_loop->websocket_socket = socket;
         result = uv_poll_init_socket(
             &event_loop->loop,
             &event_loop->websocket_poll,
@@ -225,13 +337,13 @@ int curl_socket_status_updated(
         }
 
         event_loop->websocket_poll.data = event_loop;
+        event_loop->websocket_socket = socket;
 
         if (curl_multi_assign(
                 event_loop->multi,
                 socket,
                 &event_loop->websocket_poll
             ) != CURLM_OK) {
-            uv_close((uv_handle_t *)&event_loop->websocket_poll, NULL);
             return -1;
         }
     }
@@ -247,7 +359,7 @@ int curl_socket_status_updated(
     result = uv_poll_start(
         &event_loop->websocket_poll,
         events,
-        curl_socket_event
+        websocket_connect_socket_ready
     );
 
     if (result != 0) {

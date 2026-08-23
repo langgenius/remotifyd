@@ -6,35 +6,16 @@
 #include <stddef.h>
 #include <stdint.h>
 
-enum { DEVICE_FRAME_HEADER_BYTES = 10, DEVICE_MAXIMUM_FRAME_BYTES = 16384 };
+#define DEVICE_MAXIMUM_FRAME_BYTES 16384
+#define DEVICE_FRAME_HEADER_BYTES 10
+#define DEVICE_STATUS_OK 0
+#define DEVICE_STATUS_FAILED 3
 
-typedef enum DeviceStatus {
-    DEVICE_STATUS_OK = 0,
-    DEVICE_STATUS_FAILED = 3
-} DeviceStatus;
+typedef struct DeviceFrameHeader { uint16_t type_id; uint16_t version; uint32_t request_id; uint16_t status; } DeviceFrameHeader;
 
-typedef struct DeviceFrameHeader {
-    uint16_t type_id;
-    uint16_t version;
-    uint32_t request_id;
-    DeviceStatus status;
-} DeviceFrameHeader;
+typedef uint8_t DeviceSHA256[32];
 
-typedef enum DeviceMessageType {
-    DEVICE_EXEC_RUN_REQUEST_V1_TYPE_ID = 1,
-    DEVICE_EXEC_RUN_RESPONSE_V1_TYPE_ID = 2,
-    DEVICE_EXEC_REPORT_REQUEST_V1_TYPE_ID = 3,
-    DEVICE_EXEC_REPORT_RESPONSE_V1_TYPE_ID = 4,
-    DEVICE_FILE_STAT_REQUEST_V1_TYPE_ID = 5,
-    DEVICE_FILE_STAT_RESPONSE_V1_TYPE_ID = 6,
-    DEVICE_FILE_UPLOAD_REQUEST_V1_TYPE_ID = 7,
-    DEVICE_FILE_UPLOAD_RESPONSE_V1_TYPE_ID = 8,
-    DEVICE_FILE_DOWNLOAD_REQUEST_V1_TYPE_ID = 9,
-    DEVICE_FILE_DOWNLOAD_RESPONSE_V1_TYPE_ID = 10,
-    DEVICE_APPLY_PATCH_REQUEST_V1_TYPE_ID = 11,
-    DEVICE_APPLY_PATCH_RESPONSE_V1_TYPE_ID = 12,
-} DeviceMessageType;
-
+#define DEVICE_EXEC_RUN_REQUEST_V1_TYPE_ID 1
 typedef struct DeviceExecRunRequestV1 {
     const uint8_t *operation_id;
     size_t operation_id_length;
@@ -48,27 +29,61 @@ typedef struct DeviceExecRunRequestV1 {
     size_t env_length;
 } DeviceExecRunRequestV1;
 
-typedef struct DeviceExecReportRequestV1 {
+bool device_decode_exec_run_request_v1(const uint8_t *payload, size_t payload_length, DeviceExecRunRequestV1 *message);
+bool device_encode_exec_run_request_v1(uint8_t *buffer, size_t capacity, size_t *length, uint32_t request_id, const DeviceExecRunRequestV1 *message);
+
+#define DEVICE_EXEC_REPORT_V1_TYPE_ID 2
+typedef struct DeviceExecReportV1 {
     const uint8_t *operation_id;
     size_t operation_id_length;
+    const uint8_t *local_process_id;
+    size_t local_process_id_length;
     const uint8_t *stdout;
     size_t stdout_length;
     const uint8_t *stderr;
     size_t stderr_length;
     bool has_exit_code;
     int32_t exit_code;
-} DeviceExecReportRequestV1;
+} DeviceExecReportV1;
 
+bool device_decode_exec_report_v1(const uint8_t *payload, size_t payload_length, DeviceExecReportV1 *message);
+bool device_encode_exec_report_v1(uint8_t *buffer, size_t capacity, size_t *length, uint32_t request_id, const DeviceExecReportV1 *message);
+
+#define DEVICE_HEARTBEAT_REQUEST_V1_TYPE_ID 3
+typedef struct DeviceHeartbeatRequestV1 {
+    uint8_t unused;
+} DeviceHeartbeatRequestV1;
+
+bool device_decode_heartbeat_request_v1(const uint8_t *payload, size_t payload_length, DeviceHeartbeatRequestV1 *message);
+bool device_encode_heartbeat_request_v1(uint8_t *buffer, size_t capacity, size_t *length, uint32_t request_id, const DeviceHeartbeatRequestV1 *message);
+
+#define DEVICE_HEARTBEAT_RESPONSE_V1_TYPE_ID 4
+typedef struct DeviceHeartbeatResponseV1 {
+    uint8_t unused;
+} DeviceHeartbeatResponseV1;
+
+bool device_decode_heartbeat_response_v1(const uint8_t *payload, size_t payload_length, DeviceHeartbeatResponseV1 *message);
+bool device_encode_heartbeat_response_v1(uint8_t *buffer, size_t capacity, size_t *length, uint32_t request_id, const DeviceHeartbeatResponseV1 *message);
+
+#define DEVICE_FILE_STAT_REQUEST_V1_TYPE_ID 5
 typedef struct DeviceFileStatRequestV1 {
     const uint8_t *path;
     size_t path_length;
 } DeviceFileStatRequestV1;
 
+bool device_decode_file_stat_request_v1(const uint8_t *payload, size_t payload_length, DeviceFileStatRequestV1 *message);
+bool device_encode_file_stat_request_v1(uint8_t *buffer, size_t capacity, size_t *length, uint32_t request_id, const DeviceFileStatRequestV1 *message);
+
+#define DEVICE_FILE_STAT_RESPONSE_V1_TYPE_ID 6
 typedef struct DeviceFileStatResponseV1 {
     uint64_t size_bytes;
-    uint8_t sha256[32];
+    DeviceSHA256 sha256;
 } DeviceFileStatResponseV1;
 
+bool device_decode_file_stat_response_v1(const uint8_t *payload, size_t payload_length, DeviceFileStatResponseV1 *message);
+bool device_encode_file_stat_response_v1(uint8_t *buffer, size_t capacity, size_t *length, uint32_t request_id, const DeviceFileStatResponseV1 *message);
+
+#define DEVICE_FILE_UPLOAD_REQUEST_V1_TYPE_ID 7
 typedef struct DeviceFileUploadRequestV1 {
     const uint8_t *path;
     size_t path_length;
@@ -76,6 +91,18 @@ typedef struct DeviceFileUploadRequestV1 {
     size_t transfer_ticket_length;
 } DeviceFileUploadRequestV1;
 
+bool device_decode_file_upload_request_v1(const uint8_t *payload, size_t payload_length, DeviceFileUploadRequestV1 *message);
+bool device_encode_file_upload_request_v1(uint8_t *buffer, size_t capacity, size_t *length, uint32_t request_id, const DeviceFileUploadRequestV1 *message);
+
+#define DEVICE_FILE_UPLOAD_RESPONSE_V1_TYPE_ID 8
+typedef struct DeviceFileUploadResponseV1 {
+    uint8_t unused;
+} DeviceFileUploadResponseV1;
+
+bool device_decode_file_upload_response_v1(const uint8_t *payload, size_t payload_length, DeviceFileUploadResponseV1 *message);
+bool device_encode_file_upload_response_v1(uint8_t *buffer, size_t capacity, size_t *length, uint32_t request_id, const DeviceFileUploadResponseV1 *message);
+
+#define DEVICE_FILE_DOWNLOAD_REQUEST_V1_TYPE_ID 9
 typedef struct DeviceFileDownloadRequestV1 {
     const uint8_t *path;
     size_t path_length;
@@ -83,6 +110,18 @@ typedef struct DeviceFileDownloadRequestV1 {
     size_t transfer_ticket_length;
 } DeviceFileDownloadRequestV1;
 
+bool device_decode_file_download_request_v1(const uint8_t *payload, size_t payload_length, DeviceFileDownloadRequestV1 *message);
+bool device_encode_file_download_request_v1(uint8_t *buffer, size_t capacity, size_t *length, uint32_t request_id, const DeviceFileDownloadRequestV1 *message);
+
+#define DEVICE_FILE_DOWNLOAD_RESPONSE_V1_TYPE_ID 10
+typedef struct DeviceFileDownloadResponseV1 {
+    uint8_t unused;
+} DeviceFileDownloadResponseV1;
+
+bool device_decode_file_download_response_v1(const uint8_t *payload, size_t payload_length, DeviceFileDownloadResponseV1 *message);
+bool device_encode_file_download_response_v1(uint8_t *buffer, size_t capacity, size_t *length, uint32_t request_id, const DeviceFileDownloadResponseV1 *message);
+
+#define DEVICE_APPLY_PATCH_REQUEST_V1_TYPE_ID 11
 typedef struct DeviceApplyPatchRequestV1 {
     const uint8_t *patch;
     size_t patch_length;
@@ -90,42 +129,18 @@ typedef struct DeviceApplyPatchRequestV1 {
     size_t cwd_length;
 } DeviceApplyPatchRequestV1;
 
-bool device_decode_frame_header(const uint8_t *frame, size_t frame_length, DeviceFrameHeader *header);
-
-bool device_decode_exec_run_request_v1(const uint8_t *payload, size_t payload_length, DeviceExecRunRequestV1 *message);
-bool device_encode_exec_run_request_v1(uint8_t *frame, size_t frame_capacity, size_t *frame_length, uint32_t request_id, const DeviceExecRunRequestV1 *message);
-
-bool device_decode_exec_run_response_v1(const uint8_t *payload, size_t payload_length);
-bool device_encode_exec_run_response_v1(uint8_t *frame, size_t frame_capacity, size_t *frame_length, uint32_t request_id);
-
-bool device_decode_exec_report_request_v1(const uint8_t *payload, size_t payload_length, DeviceExecReportRequestV1 *message);
-bool device_encode_exec_report_request_v1(uint8_t *frame, size_t frame_capacity, size_t *frame_length, uint32_t request_id, const DeviceExecReportRequestV1 *message);
-
-bool device_decode_exec_report_response_v1(const uint8_t *payload, size_t payload_length);
-bool device_encode_exec_report_response_v1(uint8_t *frame, size_t frame_capacity, size_t *frame_length, uint32_t request_id);
-
-bool device_decode_file_stat_request_v1(const uint8_t *payload, size_t payload_length, DeviceFileStatRequestV1 *message);
-bool device_encode_file_stat_request_v1(uint8_t *frame, size_t frame_capacity, size_t *frame_length, uint32_t request_id, const DeviceFileStatRequestV1 *message);
-
-bool device_decode_file_stat_response_v1(const uint8_t *payload, size_t payload_length, DeviceFileStatResponseV1 *message);
-bool device_encode_file_stat_response_v1(uint8_t *frame, size_t frame_capacity, size_t *frame_length, uint32_t request_id, const DeviceFileStatResponseV1 *message);
-
-bool device_decode_file_upload_request_v1(const uint8_t *payload, size_t payload_length, DeviceFileUploadRequestV1 *message);
-bool device_encode_file_upload_request_v1(uint8_t *frame, size_t frame_capacity, size_t *frame_length, uint32_t request_id, const DeviceFileUploadRequestV1 *message);
-
-bool device_decode_file_upload_response_v1(const uint8_t *payload, size_t payload_length);
-bool device_encode_file_upload_response_v1(uint8_t *frame, size_t frame_capacity, size_t *frame_length, uint32_t request_id);
-
-bool device_decode_file_download_request_v1(const uint8_t *payload, size_t payload_length, DeviceFileDownloadRequestV1 *message);
-bool device_encode_file_download_request_v1(uint8_t *frame, size_t frame_capacity, size_t *frame_length, uint32_t request_id, const DeviceFileDownloadRequestV1 *message);
-
-bool device_decode_file_download_response_v1(const uint8_t *payload, size_t payload_length);
-bool device_encode_file_download_response_v1(uint8_t *frame, size_t frame_capacity, size_t *frame_length, uint32_t request_id);
-
 bool device_decode_apply_patch_request_v1(const uint8_t *payload, size_t payload_length, DeviceApplyPatchRequestV1 *message);
-bool device_encode_apply_patch_request_v1(uint8_t *frame, size_t frame_capacity, size_t *frame_length, uint32_t request_id, const DeviceApplyPatchRequestV1 *message);
+bool device_encode_apply_patch_request_v1(uint8_t *buffer, size_t capacity, size_t *length, uint32_t request_id, const DeviceApplyPatchRequestV1 *message);
 
-bool device_decode_apply_patch_response_v1(const uint8_t *payload, size_t payload_length);
-bool device_encode_apply_patch_response_v1(uint8_t *frame, size_t frame_capacity, size_t *frame_length, uint32_t request_id);
+#define DEVICE_APPLY_PATCH_RESPONSE_V1_TYPE_ID 12
+typedef struct DeviceApplyPatchResponseV1 {
+    uint8_t unused;
+} DeviceApplyPatchResponseV1;
+
+bool device_decode_apply_patch_response_v1(const uint8_t *payload, size_t payload_length, DeviceApplyPatchResponseV1 *message);
+bool device_encode_apply_patch_response_v1(uint8_t *buffer, size_t capacity, size_t *length, uint32_t request_id, const DeviceApplyPatchResponseV1 *message);
+
+bool device_decode_frame_header(const uint8_t *message, size_t length, DeviceFrameHeader *header);
+bool device_encode_failure(uint8_t *buffer, size_t capacity, size_t *length, uint16_t type_id, uint16_t version, uint32_t request_id, const uint8_t *diagnostic, size_t diagnostic_length);
 
 #endif

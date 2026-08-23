@@ -22,6 +22,7 @@ void event_loop_executor_output_alloc(uv_handle_t *handle, size_t suggested_size
 void event_loop_executor_output_read(uv_stream_t *stream, ssize_t received, const uv_buf_t *buffer) {
     EventLoop *event_loop = stream->data;
     IpcReadBuffer *read = &event_loop->executor_read;
+    IpcProcessCallback callback;
     size_t cursor = 0;
 
     if (received == UV_EOF) {
@@ -96,7 +97,20 @@ void event_loop_executor_output_read(uv_stream_t *stream, ssize_t received, cons
         }
 
         if (read->body_received == read->header.body_length) {
-            event_loop_executor_handle(event_loop, &read->header, read->body);
+            callback = ipc_process_callbacks_get(
+                &event_loop->callbacks,
+                uv_now(&event_loop->loop),
+                (uint32_t)read->header.request_id
+            );
+
+            if (callback != NULL) {
+                callback(
+                    event_loop,
+                    (uint32_t)read->header.request_id,
+                    &read->header,
+                    read->body
+                );
+            }
 
             read->header_received = 0;
             read->body_received = 0;

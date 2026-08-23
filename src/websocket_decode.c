@@ -17,6 +17,7 @@ static bool websocket_decode_exec_run(
     uint8_t body[sizeof(IpcExecRequestHeader) + DEVICE_MAXIMUM_FRAME_BYTES];
     uint8_t *ipc_body = body + sizeof(IpcExecRequestHeader);
     IpcHeader ipc_header;
+    bool dispatched;
 
     if (!device_decode_exec_run_request_v1(payload, payload_length, &request)) return false;
     if (request.operation_id_length != IPC_OPERATION_ID_LENGTH || request.cmd_length == 0) return false;
@@ -53,7 +54,38 @@ static bool websocket_decode_exec_run(
         .type = IPC_REQUEST_EXEC
     };
 
-    return dispatch_request_to_executor(event_loop, &ipc_header, body);
+    /*
+     * Executor responses retain the device request ID, so the parent can
+     * recover this operation-specific callback without teaching its pipe
+     * readloop about Exec. Each response refreshes the existing callback TTL.
+     */
+    if (!ipc_process_callbacks_put(
+            &event_loop->callbacks,
+            uv_now(&event_loop->loop),
+            30 * 60 * 1000,
+            header->request_id,
+            event_loop_executor_handle
+        )) {
+        return false;
+    }
+
+    dispatched = dispatch_request_to_executor(event_loop, &ipc_header, body);
+
+    if (!dispatched) {
+        ipc_process_callbacks_remove(&event_loop->callbacks, header->request_id);
+    }
+
+    return dispatched;
+}
+
+static bool websocket_decode_heartbeat_response(
+    const uint8_t *payload,
+    size_t payload_length
+) {
+    DeviceHeartbeatResponseV1 response;
+
+    /* Heartbeat only confirms that the backend refreshed this connection. */
+    return device_decode_heartbeat_response_v1(payload, payload_length, &response);
 }
 
 bool websocket_decode(
@@ -73,6 +105,10 @@ bool websocket_decode(
 
     if (header.type_id == DEVICE_EXEC_RUN_REQUEST_V1_TYPE_ID && header.version == 1) {
         return websocket_decode_exec_run(event_loop, &header, payload, payload_length);
+    }
+
+    if (header.type_id == DEVICE_HEARTBEAT_RESPONSE_V1_TYPE_ID && header.version == 1) {
+        return websocket_decode_heartbeat_response(payload, payload_length);
     }
 
     return false;

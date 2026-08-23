@@ -20,11 +20,7 @@ typedef struct EventLoop {
     uv_loop_t loop;
     State state;
 
-    /*
-     * The single timer separates libcurl state advancement from WebSocket
-     * destruction by one event-loop turn. Reusing one handle avoids a timer
-     * allocation for each failed connection attempt.
-     */
+    /* Connection advancement, cleanup, and reconnect reuse this one timer. */
     uv_timer_t timer;
 
     uv_process_t executor;
@@ -34,13 +30,19 @@ typedef struct EventLoop {
 
     IpcProcessCallbacks callbacks;
 
+    /* Readiness on this multi-owned socket only resumes libcurl. */
+    uv_poll_t curl_resume_poll;
+    curl_socket_t curl_resume_socket;
+
     uv_poll_t websocket_poll;
 
     /*
      * The queue preserves frame order while a partial curl write waits for
-     * UV_WRITABLE. The timer resumes its head outside the poll callback.
+     * UV_WRITABLE. One timer resumes its head outside the poll callback; the
+     * other periodically produces the application Heartbeat request.
      */
     uv_timer_t websocket_send_timer;
+    uv_timer_t heartbeat_timer;
     CircularQueue websocket_send_queue;
     curl_socket_t websocket_socket;
     CURLM *multi;
@@ -56,6 +58,11 @@ void schedule_cleanup_websocket(EventLoop *event_loop);
 
 void event_loop_executor_output_alloc(uv_handle_t *handle, size_t suggested_size, uv_buf_t *buffer);
 void event_loop_executor_output_read(uv_stream_t *stream, ssize_t received, const uv_buf_t *buffer);
-void event_loop_executor_handle(EventLoop *event_loop, const IpcHeader *header, const uint8_t *body);
+void event_loop_executor_handle(
+    EventLoop *event_loop,
+    uint32_t device_request_id,
+    const IpcHeader *header,
+    const uint8_t *body
+);
 
 #endif

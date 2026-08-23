@@ -7,6 +7,7 @@
 
 #include <stdbool.h>
 #include <stdint.h>
+#include <stdio.h>
 #include <stdlib.h>
 
 /* curl headers can expose stdio's macros, which collide with RPC field names. */
@@ -17,6 +18,11 @@
 #ifdef stderr
 #undef stderr
 #endif
+
+enum {
+    /* Leave room for the fixed frame header and every ExecReport field. */
+    WEBSOCKET_EXEC_OUTPUT_BYTES = DEVICE_MAXIMUM_FRAME_BYTES - 96
+};
 
 CURLcode websocket_send(EventLoop *event_loop, WebSocketSend *send) {
     size_t sent = 0;
@@ -33,7 +39,7 @@ CURLcode websocket_send(EventLoop *event_loop, WebSocketSend *send) {
     return result;
 }
 
-static void websocket_exec_report_consumed(
+static void websocket_bytes_consumed(
     WebSocketSend *send,
     bool succeed
 ) {
@@ -67,20 +73,27 @@ static bool websocket_send_put(EventLoop *event_loop, WebSocketSend *send) {
     return true;
 }
 
-bool websocket_send_exec_report(
+static bool websocket_send_exec_report_frame(
     EventLoop *event_loop,
+    uint32_t request_id,
     const IpcExecReportHeader *report,
+    const uint8_t *local_process_id,
+    size_t local_process_id_length,
+    const uint8_t *stdout_bytes,
+    size_t stdout_length,
+    const uint8_t *stderr_bytes,
+    size_t stderr_length,
     bool ended
 ) {
-    const uint8_t *stdout_bytes = (const uint8_t *)(report + 1);
-    const uint8_t *stderr_bytes = stdout_bytes + report->stdout_length;
-    DeviceExecReportRequestV1 message = {
+    DeviceExecReportV1 message = {
         .operation_id = (const uint8_t *)report->operation_id,
         .operation_id_length = IPC_OPERATION_ID_LENGTH,
+        .local_process_id = local_process_id,
+        .local_process_id_length = local_process_id_length,
         .stdout = stdout_bytes,
-        .stdout_length = report->stdout_length,
+        .stdout_length = stdout_length,
         .stderr = stderr_bytes,
-        .stderr_length = report->stderr_length,
+        .stderr_length = stderr_length,
         .has_exit_code = ended,
         .exit_code = report->exit_code
     };
@@ -96,14 +109,14 @@ bool websocket_send_exec_report(
     }
 
     send->sent = 0;
-    send->consumed_callback = websocket_exec_report_consumed;
+    send->consumed_callback = websocket_bytes_consumed;
 
     /* Encode directly into the owned send buffer; no frame copy is needed. */
-    if (!device_encode_exec_report_request_v1(
+    if (!device_encode_exec_report_v1(
             send->bytes,
             DEVICE_MAXIMUM_FRAME_BYTES,
             &send->length,
-            (uint32_t)event_loop->next_request_id++,
+            request_id,
             &message
         )) {
         send->consumed_callback(send, false);
@@ -118,6 +131,183 @@ bool websocket_send_exec_report(
     }
 
     return true;
+}
+
+bool websocket_send_exec_report(
+    EventLoop *event_loop,
+    uint32_t request_id,
+    const IpcExecReportHeader *report,
+    bool ended
+) {
+    const uint8_t *stdout_bytes = (const uint8_t *)(report + 1);
+    const uint8_t *stderr_bytes = stdout_bytes + report->stdout_length;
+    size_t stdout_remaining = report->stdout_length;
+    size_t stderr_remaining = report->stderr_length;
+    char local_process_id[24];
+    const uint8_t *local_process_id_bytes = NULL;
+    size_t local_process_id_length = 0;
+    bool first = true;
+
+    if (report->local_process_id != 0) {
+        local_process_id_length = (size_t)sprintf(
+            local_process_id,
+            "%llu",
+            (unsigned long long)report->local_process_id
+        );
+        local_process_id_bytes = (const uint8_t *)local_process_id;
+    }
+
+    if (stdout_remaining == 0 && stderr_remaining == 0) {
+        return websocket_send_exec_report_frame(
+            event_loop,
+            request_id,
+            report,
+            local_process_id_bytes,
+            local_process_id_length,
+            NULL,
+            0,
+            NULL,
+            0,
+            ended
+        );
+    }
+
+    while (stdout_remaining != 0) {
+        size_t length = stdout_remaining < WEBSOCKET_EXEC_OUTPUT_BYTES
+            ? stdout_remaining
+            : WEBSOCKET_EXEC_OUTPUT_BYTES;
+        bool frame_ended = ended && length == stdout_remaining && stderr_remaining == 0;
+
+        if (!websocket_send_exec_report_frame(
+                event_loop,
+                request_id,
+                report,
+                first ? local_process_id_bytes : NULL,
+                first ? local_process_id_length : 0,
+                stdout_bytes,
+                length,
+                NULL,
+                0,
+                frame_ended
+            )) {
+            return false;
+        }
+
+        first = false;
+        stdout_bytes += length;
+        stdout_remaining -= length;
+    }
+
+    while (stderr_remaining != 0) {
+        size_t length = stderr_remaining < WEBSOCKET_EXEC_OUTPUT_BYTES
+            ? stderr_remaining
+            : WEBSOCKET_EXEC_OUTPUT_BYTES;
+        bool frame_ended = ended && length == stderr_remaining;
+
+        if (!websocket_send_exec_report_frame(
+                event_loop,
+                request_id,
+                report,
+                first ? local_process_id_bytes : NULL,
+                first ? local_process_id_length : 0,
+                NULL,
+                0,
+                stderr_bytes,
+                length,
+                frame_ended
+            )) {
+            return false;
+        }
+
+        first = false;
+        stderr_bytes += length;
+        stderr_remaining -= length;
+    }
+
+    return true;
+}
+
+bool websocket_send_exec_failure(
+    EventLoop *event_loop,
+    uint32_t request_id,
+    const uint8_t *diagnostic,
+    size_t diagnostic_length
+) {
+    WebSocketSend *send = malloc(sizeof(*send));
+
+    if (send == NULL) return false;
+
+    send->bytes = malloc(DEVICE_MAXIMUM_FRAME_BYTES);
+
+    if (send->bytes == NULL) {
+        free(send);
+        return false;
+    }
+
+    send->sent = 0;
+    send->consumed_callback = websocket_bytes_consumed;
+
+    if (!device_encode_failure(
+            send->bytes,
+            DEVICE_MAXIMUM_FRAME_BYTES,
+            &send->length,
+            DEVICE_EXEC_REPORT_V1_TYPE_ID,
+            1,
+            request_id,
+            diagnostic,
+            diagnostic_length
+        )) {
+        send->consumed_callback(send, false);
+        free(send);
+        return false;
+    }
+
+    if (!websocket_send_put(event_loop, send)) {
+        send->consumed_callback(send, false);
+        free(send);
+        return false;
+    }
+
+    return true;
+}
+
+void websocket_send_heartbeat(uv_timer_t *timer) {
+    EventLoop *event_loop = timer->data;
+    DeviceHeartbeatRequestV1 message = {0};
+    WebSocketSend *send = malloc(sizeof(*send));
+    uint32_t request_id;
+
+    if (send == NULL) {
+        logf_error("failed to allocate Heartbeat request");
+        return;
+    }
+
+    send->bytes = malloc(DEVICE_MAXIMUM_FRAME_BYTES);
+
+    if (send->bytes == NULL) {
+        free(send);
+        logf_error("failed to allocate Heartbeat request bytes");
+        return;
+    }
+
+    request_id = (uint32_t)++event_loop->next_request_id;
+    if (request_id == 0) request_id = (uint32_t)++event_loop->next_request_id;
+
+    send->sent = 0;
+    send->consumed_callback = websocket_bytes_consumed;
+
+    if (!device_encode_heartbeat_request_v1(
+            send->bytes,
+            DEVICE_MAXIMUM_FRAME_BYTES,
+            &send->length,
+            request_id,
+            &message
+        ) ||
+        !websocket_send_put(event_loop, send)) {
+        send->consumed_callback(send, false);
+        free(send);
+        logf_error("failed to queue Heartbeat request");
+    }
 }
 
 void websocket_send_clear(EventLoop *event_loop) {

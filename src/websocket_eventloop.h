@@ -5,7 +5,7 @@
 
 #include <curl/curl.h>
 
-int curl_socket_status_updated(
+int curl_socket_watch_requested(
     CURL *easy,
     curl_socket_t socket,
     int action,
@@ -19,7 +19,7 @@ int curl_timer_status_updated(
     void *context
 );
 
-void check_and_perform_socket_state_machine(EventLoop *event_loop);
+void check_websocket_connect_result(EventLoop *event_loop);
 void close_websocket_socket(EventLoop *event_loop);
 void cleanup_websocket_resource(
     EventLoop *event_loop,

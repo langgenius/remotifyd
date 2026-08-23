@@ -25,6 +25,7 @@ typedef struct ExecutorCommand {
 
     uint8_t output_pipes;
     uint8_t open_handles;
+    int32_t exit_code;
 
     iconv_t output_iconv;
     uint8_t output_pending[EXECUTOR_WORKER_EXEC_PENDING_BYTES];
