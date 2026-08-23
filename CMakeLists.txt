@@ -398,6 +398,10 @@ target_link_libraries(remotifyd PRIVATE
     remotify_iconv
 )
 
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    target_compile_definitions(remotifyd PRIVATE _GNU_SOURCE)
+endif()
+
 if(WIN32)
     if(REMOTIFY_TARGET STREQUAL "windowsxp")
         target_link_libraries(remotifyd PRIVATE advapi32)
