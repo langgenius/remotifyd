@@ -1,6 +1,8 @@
 #include "device_code.h"
 
+#include "consts.h"
 #include "logger.h"
+#include "random.h"
 #include "state.h"
 
 #include <ctype.h>
@@ -15,7 +17,7 @@ static char *device_code;
 
 static char *device_code_generate(void) {
     static const char hexadecimal[] = "0123456789abcdef";
-    char hostname[UV_MAXHOSTNAMESIZE];
+    char hostname[REMOTIFY_HOSTNAME_BYTES];
     char slug[33] = {0};
     uint8_t random[12];
     size_t hostname_length = sizeof(hostname);
@@ -26,7 +28,7 @@ static char *device_code_generate(void) {
     char *result;
 
     if (uv_os_gethostname(hostname, &hostname_length) != 0 ||
-        uv_random(NULL, NULL, random, sizeof(random), 0, NULL) != 0) {
+        !random_bytes(random, sizeof(random))) {
         return NULL;
     }
 

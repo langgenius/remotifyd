@@ -6,6 +6,7 @@
 #include "enroll.h"
 
 #include "api_base.h"
+#include "consts.h"
 #include "device_code.h"
 #include "logger.h"
 #include "state.h"
@@ -238,7 +239,7 @@ static bool enroll_save_credential(const char *api_base, const char *credential)
 }
 
 static int enroll_device(const char *api_base, const char *endpoint, const char *token) {
-    char hostname[UV_MAXHOSTNAMESIZE] = {0};
+    char hostname[REMOTIFY_HOSTNAME_BYTES] = {0};
     size_t hostname_length = sizeof(hostname);
     char *body = NULL;
     char *authorization = NULL;
