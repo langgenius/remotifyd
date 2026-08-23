@@ -306,6 +306,13 @@ else()
 endif()
 FetchContent_MakeAvailable(mbedtls)
 
+if(REMOTIFY_USE_XP_TLS)
+    target_compile_options(mbedcrypto PRIVATE
+        -include
+        ${CMAKE_CURRENT_SOURCE_DIR}/cmake/mbedtls_windows_xp.h
+    )
+endif()
+
 set(MBEDTLS_INCLUDE_DIR ${mbedtls_SOURCE_DIR}/include CACHE PATH "" FORCE)
 set(MBEDTLS_LIBRARY mbedtls CACHE STRING "" FORCE)
 set(MBEDX509_LIBRARY mbedx509 CACHE STRING "" FORCE)
