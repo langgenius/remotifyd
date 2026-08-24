@@ -271,7 +271,7 @@ if(MSVC AND NOT CMAKE_CROSSCOMPILING)
     )
 else()
     execute_process(
-        COMMAND ${REMOTIFY_HOST_C_COMPILER} -std=c99 -O2
+        COMMAND ${REMOTIFY_HOST_C_COMPILER} -std=c99 -O2 -D_POSIX_C_SOURCE=200809L
             -o ${REMOTIFY_LIBGRAPHEME_GENERATOR}
             ${libgrapheme_SOURCE_DIR}/gen/word.c
             ${libgrapheme_SOURCE_DIR}/gen/util.c
