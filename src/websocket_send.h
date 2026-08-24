@@ -32,6 +32,11 @@ bool websocket_send_exec_failure(
     const uint8_t *diagnostic,
     size_t diagnostic_length
 );
+bool websocket_send_patch_response(
+    EventLoop *event_loop,
+    uint32_t request_id,
+    IpcStatus status
+);
 void websocket_send_heartbeat(uv_timer_t *timer);
 void websocket_send_clear(EventLoop *event_loop);
 

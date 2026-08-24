@@ -1,0 +1,43 @@
+{
+  "generated_from": {
+    "commit": "862585ed000ca263312d51d319c17c3f8c70f8ed",
+    "source_file": "packages/patch-core/tests/unified-diff.test.ts"
+  },
+  "schema_version": 1,
+  "cases": [
+    {
+      "name": "parses multi-file diffs into strict file records",
+      "patch": "--- one.txt\n+++ one.txt\n@@ -1 +1 @@\n-old one\n+new one\n--- two.txt\n+++ two.txt\n@@ -1 +1 @@\n-old two\n+new two",
+      "expected_paths": [["one.txt", "one.txt"], ["two.txt", "two.txt"]],
+      "format_contains": ["--- one.txt", "+++ one.txt"]
+    },
+    {
+      "name": "formats per-file patch text from structured patches",
+      "patch": "--- /dev/null\n+++ add.txt\n@@ -0,0 +1 @@\n+added",
+      "expected_paths": [["/dev/null", "add.txt"]],
+      "expected_first_hunk_lines": ["+added"],
+      "format_contains": ["+added"]
+    },
+    {
+      "name": "does not mutate create/delete hunk offsets while formatting",
+      "patch": "--- /dev/null\n+++ add.txt\n@@ -0,0 +1 @@\n+added",
+      "expected_paths": [["/dev/null", "add.txt"]],
+      "expected_old_start": 1,
+      "format_contains": ["--- /dev/null", "+++ add.txt", "@@ -0,0 +1,1 @@"],
+      "format_twice_equal": true
+    },
+    {
+      "name": "reads create, delete, and rename paths",
+      "patch": "--- /dev/null\n+++ add.txt\n@@ -0,0 +1 @@\n+added\n--- remove.txt\n+++ /dev/null\n@@ -1 +0,0 @@\n-remove me\n--- old.txt\n+++ new.txt\n@@ -1 +1 @@\n-old\n+new",
+      "expected_paths": [["/dev/null", "add.txt"], ["remove.txt", "/dev/null"], ["old.txt", "new.txt"]]
+    },
+    {
+      "name": "normalizes hunk line counts to match git apply tolerance",
+      "patch": "--- alpha.py\n+++ alpha.py\n@@ -1,7 +1,7 @@\n def greet(name):\n-    return \"Hello, \" + name\n+    return f\"Hello, {name}! 👋\"\n \n def add(a, b):\n-    return a + b\n+    return a + b  # integer or float addition\n \n def subtract(a, b):\n     return a - b",
+      "parse_before_normalization_fails": true,
+      "normalized_header": "@@ -1,8 +1,8 @@",
+      "expected_old_lines": 8,
+      "expected_new_lines": 8
+    }
+  ]
+}

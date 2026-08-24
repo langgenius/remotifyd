@@ -12,5 +12,7 @@ void executor_worker_handle(
 ) {
     if (header->type == IPC_REQUEST_EXEC) {
         executor_worker_handle_exec_request(worker, header, (const IpcExecRequestHeader *)body);
+    } else if (header->type == IPC_REQUEST_PATCH) {
+        executor_worker_handle_patch_request(worker, header, (const IpcPatchRequestHeader *)body);
     }
 }

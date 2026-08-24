@@ -88,6 +88,45 @@ static bool websocket_decode_heartbeat_response(
     return device_decode_heartbeat_response_v1(payload, payload_length, &response);
 }
 
+static bool websocket_decode_apply_patch(
+    EventLoop *event_loop,
+    const DeviceFrameHeader *header,
+    const uint8_t *payload,
+    size_t payload_length
+) {
+    DeviceApplyPatchRequestV1 request;
+    IpcPatchRequestHeader ipc_request;
+    uint8_t body[sizeof(IpcPatchRequestHeader) + DEVICE_MAXIMUM_FRAME_BYTES];
+    IpcHeader ipc_header;
+    bool dispatched;
+
+    if (!device_decode_apply_patch_request_v1(payload, payload_length, &request)) return false;
+
+    ipc_request.patch_length = (uint32_t)request.patch_length;
+    ipc_request.cwd_length = (uint32_t)request.cwd_length;
+    memcpy(body, &ipc_request, sizeof(ipc_request));
+    memcpy(body + sizeof(ipc_request), request.patch, request.patch_length);
+    memcpy(body + sizeof(ipc_request) + request.patch_length, request.cwd, request.cwd_length);
+
+    ipc_header = (IpcHeader){
+        .request_id = header->request_id,
+        .body_length = (uint32_t)(sizeof(ipc_request) + request.patch_length + request.cwd_length),
+        .type = IPC_REQUEST_PATCH
+    };
+
+    if (!ipc_process_callbacks_put(
+            &event_loop->callbacks,
+            uv_now(&event_loop->loop),
+            30 * 60 * 1000,
+            header->request_id,
+            event_loop_executor_handle
+        )) return false;
+
+    dispatched = dispatch_request_to_executor(event_loop, &ipc_header, body);
+    if (!dispatched) ipc_process_callbacks_remove(&event_loop->callbacks, header->request_id);
+    return dispatched;
+}
+
 bool websocket_decode(
     EventLoop *event_loop,
     const uint8_t *message,
@@ -109,6 +148,10 @@ bool websocket_decode(
 
     if (header.type_id == DEVICE_HEARTBEAT_RESPONSE_V1_TYPE_ID && header.version == 1) {
         return websocket_decode_heartbeat_response(payload, payload_length);
+    }
+
+    if (header.type_id == DEVICE_APPLY_PATCH_REQUEST_V1_TYPE_ID && header.version == 1) {
+        return websocket_decode_apply_patch(event_loop, &header, payload, payload_length);
     }
 
     return false;

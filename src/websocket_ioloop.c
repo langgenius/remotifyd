@@ -11,7 +11,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-enum { WEBSOCKET_READ_BYTES = 16 * 1024 };
+enum { WEBSOCKET_READ_BYTES = 128 * 1024 };
 
 void websocket_write(uv_timer_t *timer) {
     EventLoop *event_loop = timer->data;
@@ -129,7 +129,7 @@ static void websocket_read(EventLoop *event_loop) {
 
         if (event_loop->websocket_message_length >
             sizeof(event_loop->websocket_message)) {
-            logf_error("WebSocket message exceeds 16 KiB");
+            logf_error("WebSocket message exceeds 128 KiB");
         } else {
             decoded = websocket_decode(
                 event_loop,

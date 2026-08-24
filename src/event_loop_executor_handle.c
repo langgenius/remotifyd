@@ -18,6 +18,18 @@ void event_loop_executor_handle(
 ) {
     const IpcExecReportHeader *report;
 
+    if (header->type == IPC_REQUEST_PATCH) {
+        if (!websocket_send_patch_response(
+                event_loop,
+                device_request_id,
+                (IpcStatus)header->status
+            )) {
+            logf_error("failed to queue patch result for WebSocket");
+        }
+        ipc_process_callbacks_remove(&event_loop->callbacks, device_request_id);
+        return;
+    }
+
     if (header->type != IPC_REQUEST_EXEC) return;
 
     report = (const IpcExecReportHeader *)body;

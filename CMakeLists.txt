@@ -9,6 +9,8 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
 include(FetchContent)
 include(ExternalProject)
+include(CTest)
+set(REMOTIFY_BUILD_TESTS ${BUILD_TESTING})
 
 set(REMOTIFY_TARGET "" CACHE STRING "remotifyd minimum operating-system target")
 set_property(CACHE REMOTIFY_TARGET PROPERTY STRINGS
@@ -72,11 +74,9 @@ if(WIN32)
     set(CURL_TARGET_WINDOWS_VERSION ${REMOTIFY_WINDOWS_VERSION} CACHE STRING "" FORCE)
 endif()
 
-if(REMOTIFY_USE_XP_TLS)
-    # Mbed TLS 2.28 predates CMake 4 and declares compatibility below 3.5.
-    # Keep that policy exception inside the only profile that uses the old LTS.
-    set(CMAKE_POLICY_VERSION_MINIMUM 3.5)
-endif()
+# Pinned utf8proc 2.8 and XP's Mbed TLS 2.28 both predate CMake 4 and
+# declare compatibility below the oldest policy version CMake 4 accepts.
+set(CMAKE_POLICY_VERSION_MINIMUM 3.5)
 
 message(STATUS "remotifyd target: ${REMOTIFY_TARGET}")
 
@@ -207,6 +207,106 @@ else()
     FetchContent_MakeAvailable(libuv)
 endif()
 
+# Keep Unicode behavior aligned with Go 1.25 and uniseg, which both use
+# Unicode 15.0. The same small C library supplies categories now and the
+# NFKC/grapheme operations required by source-fuzzy matching later.
+set(BUILD_SHARED_LIBS OFF CACHE BOOL "" FORCE)
+set(UTF8PROC_INSTALL OFF CACHE BOOL "" FORCE)
+set(UTF8PROC_ENABLE_TESTING OFF CACHE BOOL "" FORCE)
+FetchContent_Declare(
+    utf8proc
+    URL https://github.com/JuliaStrings/utf8proc/archive/refs/tags/v2.8.0.tar.gz
+    URL_HASH SHA256=a0a60a79fe6f6d54e7d411facbfcc867a6e198608f2cd992490e46f04b1bcecc
+    SOURCE_DIR ${CMAKE_CURRENT_SOURCE_DIR}/vendor/utf8proc-2.8.0
+)
+FetchContent_MakeAvailable(utf8proc)
+
+# libgrapheme 2.0.2 supplies the Unicode 15.0 UAX #29 word boundaries used
+# by Echo's source-provenance checks. Build only its freestanding word path.
+FetchContent_Declare(
+    libgrapheme
+    URL https://dl.suckless.org/libgrapheme/libgrapheme-2.0.2.tar.gz
+    URL_HASH SHA256=a68bbddde76bd55ba5d64116ce5e42a13df045c81c0852de9ab60896aa143125
+    SOURCE_DIR ${CMAKE_CURRENT_SOURCE_DIR}/vendor/libgrapheme-2.0.2
+)
+FetchContent_GetProperties(libgrapheme)
+if(NOT libgrapheme_POPULATED)
+    FetchContent_Populate(libgrapheme)
+endif()
+
+set(REMOTIFY_LIBGRAPHEME_WORD_DIR ${CMAKE_CURRENT_BINARY_DIR}/libgrapheme-word)
+file(MAKE_DIRECTORY
+    ${REMOTIFY_LIBGRAPHEME_WORD_DIR}/gen
+    ${REMOTIFY_LIBGRAPHEME_WORD_DIR}/src
+)
+configure_file(
+    ${libgrapheme_SOURCE_DIR}/src/word.c
+    ${REMOTIFY_LIBGRAPHEME_WORD_DIR}/src/word.c
+    COPYONLY
+)
+configure_file(
+    ${libgrapheme_SOURCE_DIR}/grapheme.h
+    ${REMOTIFY_LIBGRAPHEME_WORD_DIR}/grapheme.h
+    COPYONLY
+)
+
+if(CMAKE_CROSSCOMPILING)
+    find_program(REMOTIFY_HOST_C_COMPILER NAMES cc clang gcc REQUIRED)
+else()
+    set(REMOTIFY_HOST_C_COMPILER ${CMAKE_C_COMPILER})
+endif()
+if(CMAKE_HOST_WIN32)
+    set(REMOTIFY_LIBGRAPHEME_GENERATOR ${REMOTIFY_LIBGRAPHEME_WORD_DIR}/word-gen.exe)
+else()
+    set(REMOTIFY_LIBGRAPHEME_GENERATOR ${REMOTIFY_LIBGRAPHEME_WORD_DIR}/word-gen)
+endif()
+if(MSVC AND NOT CMAKE_CROSSCOMPILING)
+    execute_process(
+        COMMAND ${REMOTIFY_HOST_C_COMPILER} /nologo /O2 /std:c11
+            /Fe${REMOTIFY_LIBGRAPHEME_GENERATOR}
+            ${libgrapheme_SOURCE_DIR}/gen/word.c
+            ${libgrapheme_SOURCE_DIR}/gen/util.c
+        WORKING_DIRECTORY ${REMOTIFY_LIBGRAPHEME_WORD_DIR}
+        RESULT_VARIABLE REMOTIFY_LIBGRAPHEME_COMPILE_RESULT
+    )
+else()
+    execute_process(
+        COMMAND ${REMOTIFY_HOST_C_COMPILER} -std=c99 -O2
+            -o ${REMOTIFY_LIBGRAPHEME_GENERATOR}
+            ${libgrapheme_SOURCE_DIR}/gen/word.c
+            ${libgrapheme_SOURCE_DIR}/gen/util.c
+        WORKING_DIRECTORY ${REMOTIFY_LIBGRAPHEME_WORD_DIR}
+        RESULT_VARIABLE REMOTIFY_LIBGRAPHEME_COMPILE_RESULT
+    )
+endif()
+if(NOT REMOTIFY_LIBGRAPHEME_COMPILE_RESULT EQUAL 0)
+    message(FATAL_ERROR "The host compiler could not build libgrapheme's word-table generator")
+endif()
+execute_process(
+    COMMAND ${REMOTIFY_LIBGRAPHEME_GENERATOR}
+    WORKING_DIRECTORY ${libgrapheme_SOURCE_DIR}
+    OUTPUT_FILE ${REMOTIFY_LIBGRAPHEME_WORD_DIR}/gen/word.h.tmp
+    RESULT_VARIABLE REMOTIFY_LIBGRAPHEME_GENERATE_RESULT
+)
+if(NOT REMOTIFY_LIBGRAPHEME_GENERATE_RESULT EQUAL 0)
+    file(REMOVE ${REMOTIFY_LIBGRAPHEME_WORD_DIR}/gen/word.h.tmp)
+    message(FATAL_ERROR "libgrapheme's word-table generator failed")
+endif()
+file(RENAME
+    ${REMOTIFY_LIBGRAPHEME_WORD_DIR}/gen/word.h.tmp
+    ${REMOTIFY_LIBGRAPHEME_WORD_DIR}/gen/word.h
+)
+
+add_library(remotify_grapheme_word STATIC
+    ${REMOTIFY_LIBGRAPHEME_WORD_DIR}/src/word.c
+    ${libgrapheme_SOURCE_DIR}/src/util.c
+    ${libgrapheme_SOURCE_DIR}/src/utf8.c
+)
+target_include_directories(remotify_grapheme_word
+    PUBLIC ${REMOTIFY_LIBGRAPHEME_WORD_DIR}
+    PRIVATE ${libgrapheme_SOURCE_DIR}/src
+)
+
 # libidn2 does not provide a CMake build. Download its fixed source release to
 # vendor, build its static library with the bundled libunistring sources, and
 # expose the resulting paths before configuring libcurl.
@@ -278,7 +378,6 @@ set(BUILD_CURL_EXE OFF CACHE BOOL "" FORCE)
 set(BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
 set(BUILD_LIBCURL_DOCS OFF CACHE BOOL "" FORCE)
 set(BUILD_MISC_DOCS OFF CACHE BOOL "" FORCE)
-set(BUILD_SHARED_LIBS OFF CACHE BOOL "" FORCE)
 set(BUILD_STATIC_LIBS ON CACHE BOOL "" FORCE)
 set(BUILD_TESTING OFF CACHE BOOL "" FORCE)
 set(CURL_ENABLE_EXPORT_TARGET OFF CACHE BOOL "" FORCE)
@@ -367,6 +466,7 @@ else()
     )
 endif()
 FetchContent_MakeAvailable(libcurl)
+set(BUILD_TESTING ${REMOTIFY_BUILD_TESTS} CACHE BOOL "Build tests" FORCE)
 
 if(NOT WIN32)
     add_dependencies(libcurl_static remotify_libidn2)
@@ -405,6 +505,35 @@ add_executable(remotifyd
     src/executor_worker_handler.c
     src/executor_worker_exec.c
     src/executor_worker_exec_reader.c
+    src/executor_worker_patch.c
+    src/executor_worker_patch_apply_exact.c
+    src/executor_worker_patch_candidates.c
+    src/executor_worker_patch_commit.c
+    src/executor_worker_patch_format.c
+    src/executor_worker_patch_git_path.c
+    src/executor_worker_patch_json_unicode.c
+    src/executor_worker_patch_model_escape.c
+    src/executor_worker_patch_model_escape_document.c
+    src/executor_worker_patch_normalize.c
+    src/executor_worker_patch_parser.c
+    src/executor_worker_patch_path.c
+    src/executor_worker_patch_preview.c
+    src/executor_worker_patch_preview_policy.c
+    src/executor_worker_patch_source.c
+    src/executor_worker_patch_source_fuzzy.c
+    src/executor_worker_patch_source_fuzzy_block.c
+    src/executor_worker_patch_source_fuzzy_character_merge.c
+    src/executor_worker_patch_source_fuzzy_character_diff.c
+    src/executor_worker_patch_source_fuzzy_match.c
+    src/executor_worker_patch_source_fuzzy_permutation.c
+    src/executor_worker_patch_source_fuzzy_document.c
+    src/executor_worker_patch_source_fuzzy_evidence.c
+    src/executor_worker_patch_source_fuzzy_provenance.c
+    src/executor_worker_patch_source_fuzzy_presentation.c
+    src/executor_worker_patch_source_fuzzy_raw.c
+    src/executor_worker_patch_source_fuzzy_semantic.c
+    src/executor_worker_patch_source_fuzzy_unicode.c
+    src/executor_worker_patch_unicode.c
     src/executor_worker_shell_locate.c
     src/executor_worker_output.c
     src/enroll.c
@@ -434,6 +563,78 @@ if(CMAKE_BUILD_TYPE STREQUAL "Release")
     endif()
 endif()
 
+if(REMOTIFY_BUILD_TESTS)
+    add_executable(remotifyd_patch_tests EXCLUDE_FROM_ALL
+        tests/executor_worker_patch_test.c
+        tests/executor_worker_patch_core_test.c
+        tests/executor_worker_patch_fault.c
+        tests/executor_worker_patch_stress.c
+        tests/executor_worker_patch_test_support.c
+        src/executor_worker_patch.c
+        src/executor_worker_patch_apply_exact.c
+        src/executor_worker_patch_candidates.c
+        src/executor_worker_patch_commit.c
+        src/executor_worker_patch_format.c
+        src/executor_worker_patch_git_path.c
+        src/executor_worker_patch_json_unicode.c
+        src/executor_worker_patch_model_escape.c
+        src/executor_worker_patch_model_escape_document.c
+        src/executor_worker_patch_normalize.c
+        src/executor_worker_patch_parser.c
+        src/executor_worker_patch_path.c
+        src/executor_worker_patch_preview.c
+        src/executor_worker_patch_preview_policy.c
+        src/executor_worker_patch_source.c
+        src/executor_worker_patch_source_fuzzy.c
+        src/executor_worker_patch_source_fuzzy_block.c
+        src/executor_worker_patch_source_fuzzy_character_merge.c
+        src/executor_worker_patch_source_fuzzy_character_diff.c
+        src/executor_worker_patch_source_fuzzy_match.c
+        src/executor_worker_patch_source_fuzzy_permutation.c
+        src/executor_worker_patch_source_fuzzy_document.c
+        src/executor_worker_patch_source_fuzzy_evidence.c
+        src/executor_worker_patch_source_fuzzy_provenance.c
+        src/executor_worker_patch_source_fuzzy_presentation.c
+        src/executor_worker_patch_source_fuzzy_raw.c
+        src/executor_worker_patch_source_fuzzy_semantic.c
+        src/executor_worker_patch_source_fuzzy_unicode.c
+        src/executor_worker_patch_unicode.c
+        src/executor_worker_output.c
+        src/logger.c
+        src/random_xp.c
+        src/random_vista.c
+        src/random_unix.c
+    )
+    target_include_directories(remotifyd_patch_tests PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/src
+        ${CMAKE_CURRENT_SOURCE_DIR}/tests
+    )
+    target_compile_definitions(remotifyd_patch_tests PRIVATE
+        uv_fs_open=patch_test_uv_fs_open
+        uv_fs_write=patch_test_uv_fs_write
+        uv_fs_fsync=patch_test_uv_fs_fsync
+        uv_fs_fstat=patch_test_uv_fs_fstat
+        uv_fs_rename=patch_test_uv_fs_rename
+        uv_fs_chmod=patch_test_uv_fs_chmod
+        uv_fs_unlink=patch_test_uv_fs_unlink
+    )
+    target_link_libraries(remotifyd_patch_tests PRIVATE
+        uv_a utf8proc remotify_grapheme_word
+    )
+    if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+        target_compile_definitions(remotifyd_patch_tests PRIVATE _GNU_SOURCE)
+    elseif(WIN32 AND REMOTIFY_TARGET STREQUAL "windowsxp")
+        target_link_libraries(remotifyd_patch_tests PRIVATE advapi32)
+    elseif(WIN32)
+        target_link_libraries(remotifyd_patch_tests PRIVATE bcrypt)
+    endif()
+    add_test(NAME executor_worker_patch COMMAND remotifyd_patch_tests)
+    add_test(NAME executor_worker_patch_stress COMMAND remotifyd_patch_tests --stress)
+    add_test(NAME executor_worker_patch_fault_stress COMMAND remotifyd_patch_tests --fault-stress)
+    set_tests_properties(executor_worker_patch_stress PROPERTIES TIMEOUT 300)
+    set_tests_properties(executor_worker_patch_fault_stress PROPERTIES TIMEOUT 300)
+endif()
+
 # iconv.h is installed by the external build, so the daemon's compilation must
 # not begin until that dependency has completed its install step.
 add_dependencies(remotifyd remotify_libiconv)
@@ -447,6 +648,8 @@ target_link_libraries(remotifyd PRIVATE
     uv_a
     CURL::libcurl
     remotify_iconv
+    utf8proc
+    remotify_grapheme_word
 )
 
 if(CMAKE_SYSTEM_NAME STREQUAL "Linux")

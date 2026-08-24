@@ -129,9 +129,9 @@ watching the underlying socket.
 
 ### Incoming message lifetime
 
-Each `websocket_read` invocation uses a 16 KiB stack read buffer. A WebSocket
+Each `websocket_read` invocation uses a 128 KiB stack read buffer. A WebSocket
 message may arrive across multiple `curl_ws_recv` calls or WebSocket frames, so
-the parent keeps the assembled message in the fixed 16 KiB buffer embedded in
+the parent keeps the assembled message in the fixed 128 KiB buffer embedded in
 `EventLoop`.
 
 ```text
@@ -323,7 +323,7 @@ is released.
 Each output read uses one temporary allocation laid out as:
 
 ```text
-[ pending prefix ][ 16 KiB libuv read area ][ IPC report header ][ UTF-8 output ]
+[ pending prefix ][ 128 KiB libuv read area ][ IPC report header ][ UTF-8 output ]
 ```
 
 The pending prefix lets an incomplete multibyte character from the previous

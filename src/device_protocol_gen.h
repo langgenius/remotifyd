@@ -6,7 +6,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#define DEVICE_MAXIMUM_FRAME_BYTES 16384
+#define DEVICE_MAXIMUM_FRAME_BYTES 131072
 #define DEVICE_FRAME_HEADER_BYTES 10
 #define DEVICE_STATUS_OK 0
 #define DEVICE_STATUS_FAILED 3

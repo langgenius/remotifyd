@@ -24,6 +24,14 @@ void executor_worker_input_alloc(uv_handle_t *handle, size_t suggested_size, uv_
 void executor_worker_input_read(uv_stream_t *stream, ssize_t received, const uv_buf_t *buffer);
 void executor_worker_handle(ExecutorWorker *worker, const IpcHeader *header, const uint8_t *body);
 void executor_worker_handle_exec_request(ExecutorWorker *worker, const IpcHeader *header, const IpcExecRequestHeader *request);
+void executor_worker_handle_patch_request(ExecutorWorker *worker, const IpcHeader *header, const IpcPatchRequestHeader *request);
+IpcStatus executor_worker_patch_apply(
+    uv_loop_t *loop,
+    const uint8_t *patch,
+    size_t patch_length,
+    const uint8_t *cwd,
+    size_t cwd_length
+);
 bool executor_worker_output(ExecutorWorker *worker, const IpcHeader *header, const uint8_t *body);
 int executor_worker_run(void);
 

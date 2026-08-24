@@ -13,6 +13,12 @@ typedef enum IpcResponseType {
     IPC_END = 2
 } IpcResponseType;
 
+typedef enum IpcStatus {
+    IPC_STATUS_OK = 0,
+    IPC_STATUS_FAILED = 1,
+    IPC_STATUS_UNCERTAIN = 2
+} IpcStatus;
+
 typedef struct IpcHeader {
     uint64_t request_id;
     uint32_t body_length;

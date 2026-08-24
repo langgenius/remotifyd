@@ -271,6 +271,60 @@ bool websocket_send_exec_failure(
     return true;
 }
 
+bool websocket_send_patch_response(
+    EventLoop *event_loop,
+    uint32_t request_id,
+    IpcStatus status
+) {
+    static const uint8_t failed[] = "patch could not be applied exactly";
+    static const uint8_t uncertain[] = "patch result is uncertain";
+    DeviceApplyPatchResponseV1 message = {0};
+    WebSocketSend *send = malloc(sizeof(*send));
+
+    if (send == NULL) return false;
+    send->bytes = malloc(DEVICE_MAXIMUM_FRAME_BYTES);
+    if (send->bytes == NULL) {
+        free(send);
+        return false;
+    }
+
+    send->sent = 0;
+    send->consumed_callback = websocket_bytes_consumed;
+    if (status == IPC_STATUS_OK) {
+        if (!device_encode_apply_patch_response_v1(
+                send->bytes,
+                DEVICE_MAXIMUM_FRAME_BYTES,
+                &send->length,
+                request_id,
+                &message
+            )) goto failed;
+    } else {
+        const uint8_t *diagnostic = status == IPC_STATUS_UNCERTAIN ? uncertain : failed;
+        size_t diagnostic_length = status == IPC_STATUS_UNCERTAIN
+            ? sizeof(uncertain) - 1
+            : sizeof(failed) - 1;
+
+        if (!device_encode_failure(
+                send->bytes,
+                DEVICE_MAXIMUM_FRAME_BYTES,
+                &send->length,
+                DEVICE_APPLY_PATCH_RESPONSE_V1_TYPE_ID,
+                1,
+                request_id,
+                diagnostic,
+                diagnostic_length
+            )) goto failed;
+    }
+
+    if (!websocket_send_put(event_loop, send)) goto failed;
+    return true;
+
+failed:
+    send->consumed_callback(send, false);
+    free(send);
+    return false;
+}
+
 void websocket_send_heartbeat(uv_timer_t *timer) {
     EventLoop *event_loop = timer->data;
     DeviceHeartbeatRequestV1 message = {0};

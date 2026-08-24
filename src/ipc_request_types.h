@@ -4,7 +4,8 @@
 #include "ipc_types.h"
 
 typedef enum IpcRequestType {
-    IPC_REQUEST_EXEC = 1
+    IPC_REQUEST_EXEC = 1,
+    IPC_REQUEST_PATCH = 2
 } IpcRequestType;
 
 /*
@@ -21,5 +22,13 @@ typedef struct IpcExecRequestHeader {
 } IpcExecRequestHeader;
 
 _Static_assert(sizeof(IpcExecRequestHeader) == 52, "unexpected IpcExecRequestHeader size");
+
+/* Patch and cwd bytes follow this header in the same order. */
+typedef struct IpcPatchRequestHeader {
+    uint32_t patch_length;
+    uint32_t cwd_length;
+} IpcPatchRequestHeader;
+
+_Static_assert(sizeof(IpcPatchRequestHeader) == 8, "unexpected IpcPatchRequestHeader size");
 
 #endif
