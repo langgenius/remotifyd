@@ -35,12 +35,16 @@ bool executor_worker_exec_report(ExecutorCommand *command, IpcResponseType respo
     return executor_worker_output(command->worker, &header, (const uint8_t *)report);
 }
 
-void executor_worker_exec_report_end(ExecutorCommand *command) {
+void executor_worker_exec_terminal_event(ExecutorCommand *command) {
     IpcExecReportHeader report = {0};
 
-    if (!command->process_exited || command->output_pipes != 0) return;
+    command->terminal_events--;
+    if (command->terminal_events != 0) return;
+
     report.exit_code = command->exit_code;
-    executor_worker_exec_report(command, IPC_END, &report);
+    if (!executor_worker_exec_report(command, IPC_END, &report)) {
+        logf_error("failed to report the ended command");
+    }
 }
 
 static void executor_command_exited(uv_process_t *process, int64_t exit_status, int term_signal) {
@@ -49,8 +53,7 @@ static void executor_command_exited(uv_process_t *process, int64_t exit_status, 
     (void)term_signal;
 
     command->exit_code = (int32_t)exit_status;
-    command->process_exited = true;
-    executor_worker_exec_report_end(command);
+    executor_worker_exec_terminal_event(command);
 
     /* stdout and stderr remain alive until their readers receive UV_EOF. */
     uv_close((uv_handle_t *)process, executor_worker_exec_handle_closed);
@@ -211,7 +214,7 @@ void executor_worker_handle_exec_request(
     command->worker = worker;
     command->request_id = header->request_id;
     memcpy(command->operation_id, request->operation_id, IPC_OPERATION_ID_LENGTH);
-    command->output_pipes = 2;
+    command->terminal_events = 3;
     command->output_iconv = (iconv_t)-1;
     command->error_iconv = (iconv_t)-1;
 

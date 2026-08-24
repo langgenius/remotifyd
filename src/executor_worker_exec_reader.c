@@ -25,6 +25,9 @@ enum {
     EXECUTOR_WORKER_EXEC_ALLOC_BYTES = EXECUTOR_WORKER_EXEC_INPUT_BYTES + sizeof(IpcExecReportHeader) + EXECUTOR_WORKER_EXEC_UTF8_BYTES
 };
 
+static const char executor_worker_exec_stdout_hex[] = "[remotify stdout_hex] ";
+static const char executor_worker_exec_stderr_hex[] = "[remotify stderr_hex] ";
+
 static bool executor_worker_exec_utf8(const uint8_t *input, size_t input_length) {
     iconv_t converter = iconv_open("UTF-8", "UTF-8");
     char *input_cursor = (char *)input;
@@ -61,19 +64,24 @@ static const char *executor_worker_exec_native_encoding(char encoding[32]) {
 #endif
 }
 
-static iconv_t executor_worker_exec_iconv_detect(const uint8_t *input, size_t input_length, size_t *bom_length) {
+static iconv_t executor_worker_exec_iconv_detect(
+    const uint8_t *input,
+    size_t input_length,
+    bool allow_bom,
+    size_t *bom_length
+) {
     const char *source_encoding;
     char native_encoding[32];
 
     *bom_length = 0;
 
-    if (input_length >= 3 && input[0] == 0xef && input[1] == 0xbb && input[2] == 0xbf) {
+    if (allow_bom && input_length >= 3 && input[0] == 0xef && input[1] == 0xbb && input[2] == 0xbf) {
         source_encoding = "UTF-8";
         *bom_length = 3;
-    } else if (input_length >= 2 && input[0] == 0xff && input[1] == 0xfe) {
+    } else if (allow_bom && input_length >= 2 && input[0] == 0xff && input[1] == 0xfe) {
         source_encoding = "UTF-16LE";
         *bom_length = 2;
-    } else if (input_length >= 2 && input[0] == 0xfe && input[1] == 0xff) {
+    } else if (allow_bom && input_length >= 2 && input[0] == 0xfe && input[1] == 0xff) {
         source_encoding = "UTF-16BE";
         *bom_length = 2;
     } else if (executor_worker_exec_utf8(input, input_length)) {
@@ -84,6 +92,25 @@ static iconv_t executor_worker_exec_iconv_detect(const uint8_t *input, size_t in
 
     /* This converter remains attached to one concrete output pipe until close. */
     return iconv_open("UTF-8", source_encoding);
+}
+
+static size_t executor_worker_exec_hex(
+    uint8_t *output,
+    const char *label,
+    const uint8_t *input,
+    size_t input_length
+) {
+    static const uint8_t digits[] = "0123456789abcdef";
+    size_t label_length = strlen(label);
+    size_t cursor = label_length;
+
+    memcpy(output, label, label_length);
+    for (size_t index = 0; index < input_length; index++) {
+        output[cursor++] = digits[input[index] >> 4];
+        output[cursor++] = digits[input[index] & 0x0f];
+    }
+    output[cursor++] = '\n';
+    return cursor;
 }
 
 static bool executor_worker_exec_iconv(
@@ -113,12 +140,13 @@ static bool executor_worker_exec_iconv(
              * iconv leaves an incomplete trailing character unconsumed. The
              * caller keeps only that suffix and prepends it to the next read.
              */
+            if (input_remaining > EXECUTOR_WORKER_EXEC_PENDING_BYTES) return false;
             memcpy(pending, input_cursor, input_remaining);
             *pending_length = input_remaining;
             break;
         }
 
-        /* E2BIG and EILSEQ are conversion failures; no fallback is applied. */
+        /* E2BIG and EILSEQ are conversion failures reported to the caller. */
         return false;
     }
 
@@ -126,20 +154,136 @@ static bool executor_worker_exec_iconv(
     return true;
 }
 
+static void executor_worker_exec_convert(
+    iconv_t *converter,
+    uint8_t pending[EXECUTOR_WORKER_EXEC_PENDING_BYTES],
+    size_t *pending_length,
+    bool *started,
+    bool *hex,
+    const char *hex_label,
+    uint8_t *input,
+    size_t input_length,
+    uint8_t *output,
+    size_t *output_length
+) {
+    size_t ascii_length = 0;
+    size_t bom_length = 0;
+    size_t converted_length = 0;
+
+    if (*hex) {
+        *output_length = executor_worker_exec_hex(output, hex_label, input, input_length);
+        return;
+    }
+
+    if (*converter == (iconv_t)-1) {
+        while (ascii_length < input_length && input[ascii_length] < 0x80) {
+            ascii_length++;
+        }
+        memcpy(output, input, ascii_length);
+
+        if (ascii_length == input_length) {
+            *started = *started || ascii_length != 0;
+            *output_length = ascii_length;
+            return;
+        }
+
+        *converter = executor_worker_exec_iconv_detect(
+            input + ascii_length,
+            input_length - ascii_length,
+            !*started && ascii_length == 0,
+            &bom_length
+        );
+        if (*converter == (iconv_t)-1) goto hexadecimal;
+
+        if (!executor_worker_exec_iconv(
+                *converter,
+                pending,
+                pending_length,
+                input + ascii_length + bom_length,
+                input_length - ascii_length - bom_length,
+                output + ascii_length,
+                EXECUTOR_WORKER_EXEC_UTF8_BYTES - ascii_length,
+                &converted_length
+            )) goto hexadecimal;
+
+        *started = true;
+        *output_length = ascii_length + converted_length;
+        return;
+    }
+
+    if (executor_worker_exec_iconv(
+            *converter,
+            pending,
+            pending_length,
+            input,
+            input_length,
+            output,
+            EXECUTOR_WORKER_EXEC_UTF8_BYTES,
+            output_length
+        )) {
+        return;
+    }
+
+hexadecimal:
+    *hex = true;
+    *pending_length = 0;
+    *output_length = executor_worker_exec_hex(output, hex_label, input, input_length);
+}
+
+static void executor_worker_exec_pending_hex(
+    ExecutorCommand *command,
+    uint8_t pending[EXECUTOR_WORKER_EXEC_PENDING_BYTES],
+    size_t *pending_length,
+    const char *label,
+    bool stdout_stream
+) {
+    struct ExecutorWorkerExecPendingReport {
+        IpcExecReportHeader report;
+        uint8_t bytes[64];
+    } payload = {0};
+
+    if (*pending_length == 0) return;
+
+    if (stdout_stream) {
+        payload.report.stdout_length = (uint32_t)executor_worker_exec_hex(
+            payload.bytes, label, pending, *pending_length
+        );
+    } else {
+        payload.report.stderr_length = (uint32_t)executor_worker_exec_hex(
+            payload.bytes, label, pending, *pending_length
+        );
+    }
+    *pending_length = 0;
+
+    if (!executor_worker_exec_report(command, IPC_STREAM, &payload.report)) {
+        logf_error("failed to report incomplete command output");
+    }
+}
+
 void executor_worker_exec_stdout_end(ExecutorCommand *command) {
+    executor_worker_exec_pending_hex(
+        command,
+        command->output_pending,
+        &command->output_pending_length,
+        executor_worker_exec_stdout_hex,
+        true
+    );
     uv_read_stop((uv_stream_t *)&command->output);
     uv_close((uv_handle_t *)&command->output, executor_worker_exec_handle_closed);
-    command->output_pipes--;
-
-    if (command->output_pipes == 0) executor_worker_exec_report_end(command);
+    executor_worker_exec_terminal_event(command);
 }
 
 void executor_worker_exec_stderr_end(ExecutorCommand *command) {
+    executor_worker_exec_pending_hex(
+        command,
+        command->error_pending,
+        &command->error_pending_length,
+        executor_worker_exec_stderr_hex,
+        false
+    );
     uv_read_stop((uv_stream_t *)&command->error);
     uv_close((uv_handle_t *)&command->error, executor_worker_exec_handle_closed);
-    command->output_pipes--;
-
-    if (command->output_pipes == 0) executor_worker_exec_report_end(command);
+    executor_worker_exec_terminal_event(command);
 }
 
 void executor_worker_exec_alloc(uv_handle_t *handle, size_t suggested_size, uv_buf_t *buffer) {
@@ -170,7 +314,7 @@ void executor_worker_exec_stdout_read(uv_stream_t *stream, ssize_t received, con
     IpcExecReportHeader *report;
     uint8_t *utf8;
     size_t utf8_length;
-    size_t bom_length = 0;
+    bool was_hex;
 
     if (received < 0) {
         if (buffer->base != NULL) {
@@ -214,31 +358,21 @@ void executor_worker_exec_stdout_read(uv_stream_t *stream, ssize_t received, con
     report = (IpcExecReportHeader *)(allocation + EXECUTOR_WORKER_EXEC_INPUT_BYTES);
     utf8 = (uint8_t *)(report + 1);
 
-    if (command->output_iconv == (iconv_t)-1) {
-        /* Source encoding is detected once, then this pipe reuses its iconv_t. */
-        command->output_iconv = executor_worker_exec_iconv_detect(input, input_length, &bom_length);
-
-        if (command->output_iconv == (iconv_t)-1) {
-            logf_error("failed to initialize command stdout converter");
-            free(allocation);
-            return;
-        }
-    }
-
-    /* A detected BOM describes the source encoding and is not command output. */
-    if (!executor_worker_exec_iconv(
-            command->output_iconv,
+    was_hex = command->output_hex;
+    executor_worker_exec_convert(
+            &command->output_iconv,
             command->output_pending,
             &command->output_pending_length,
-            input + bom_length,
-            input_length - bom_length,
+            &command->output_started,
+            &command->output_hex,
+            executor_worker_exec_stdout_hex,
+            input,
+            input_length,
             utf8,
-            EXECUTOR_WORKER_EXEC_UTF8_BYTES,
             &utf8_length
-        )) {
+        );
+    if (!was_hex && command->output_hex) {
         logf_error("failed to convert command stdout to UTF-8");
-        free(allocation);
-        return;
     }
 
     if (utf8_length != 0) {
@@ -259,7 +393,7 @@ void executor_worker_exec_stderr_read(uv_stream_t *stream, ssize_t received, con
     IpcExecReportHeader *report;
     uint8_t *utf8;
     size_t utf8_length;
-    size_t bom_length = 0;
+    bool was_hex;
 
     if (received < 0) {
         if (buffer->base != NULL) {
@@ -287,31 +421,21 @@ void executor_worker_exec_stderr_read(uv_stream_t *stream, ssize_t received, con
     report = (IpcExecReportHeader *)(allocation + EXECUTOR_WORKER_EXEC_INPUT_BYTES);
     utf8 = (uint8_t *)(report + 1);
 
-    if (command->error_iconv == (iconv_t)-1) {
-        /* stderr determines and then permanently reuses its own source encoding. */
-        command->error_iconv = executor_worker_exec_iconv_detect(input, input_length, &bom_length);
-
-        if (command->error_iconv == (iconv_t)-1) {
-            logf_error("failed to initialize command stderr converter");
-            free(allocation);
-            return;
-        }
-    }
-
-    /* A leading BOM selects stderr's source encoding but is not output text. */
-    if (!executor_worker_exec_iconv(
-            command->error_iconv,
+    was_hex = command->error_hex;
+    executor_worker_exec_convert(
+            &command->error_iconv,
             command->error_pending,
             &command->error_pending_length,
-            input + bom_length,
-            input_length - bom_length,
+            &command->error_started,
+            &command->error_hex,
+            executor_worker_exec_stderr_hex,
+            input,
+            input_length,
             utf8,
-            EXECUTOR_WORKER_EXEC_UTF8_BYTES,
             &utf8_length
-        )) {
+        );
+    if (!was_hex && command->error_hex) {
         logf_error("failed to convert command stderr to UTF-8");
-        free(allocation);
-        return;
     }
 
     if (utf8_length != 0) {

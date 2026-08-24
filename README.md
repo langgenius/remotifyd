@@ -273,7 +273,7 @@ one uv_process_t
 one stdin uv_pipe_t
 one stdout uv_pipe_t
 one stderr uv_pipe_t
-one iconv_t per output pipe, initialized on first output
+one iconv_t per output pipe, initialized on its first non-ASCII output
 one small pending-byte suffix per output pipe
 ```
 
@@ -295,8 +295,9 @@ it in `handle->data`.
 
 Two small counters express two different lifecycle facts:
 
-- `output_pipes` answers whether stdout and stderr have both reached EOF. The
-  second EOF emits the terminal IPC report.
+- `terminal_events` begins at three. Process exit, stdout EOF, and stderr EOF
+  each consume one event; whichever consumes the last event emits the one
+  terminal IPC report.
 - `open_handles` answers whether any process or stdio handle can still invoke a
   close callback. It is the allocation-release authority.
 
@@ -310,15 +311,19 @@ Every successfully initialized handle increments `open_handles`. Every handle
 uses the same close callback, which decrements it. Only the callback that makes
 the count zero closes both iconv converters and frees `ExecutorCommand`.
 Consequently, process exit, stdout EOF, stderr EOF, and stdin completion may
-arrive in any order without adding separate `process_exited` or `output_ended`
-booleans.
+arrive in any order. Terminal readiness and allocation lifetime do not share
+state or infer one another.
 
 ### Output conversion lifetime
 
 stdout and stderr are decoded independently because they are separate byte
-streams and may use different first-read evidence. The first bytes select a
-source encoding; that pipe then retains one `iconv_t` until the command object
-is released.
+streams. ASCII is emitted immediately without choosing an encoding because it
+has the same representation in UTF-8 and the native code page. The first
+non-ASCII sequence selects UTF-8 or the native encoding; that pipe then retains
+one `iconv_t` until the command object is released. If later bytes cannot be
+decoded with that choice, all remaining bytes on that pipe are emitted as
+ASCII hexadecimal prefixed with `[remotify stdout_hex]` or
+`[remotify stderr_hex]`, so output is never silently discarded.
 
 Each output read uses one temporary allocation laid out as:
 
