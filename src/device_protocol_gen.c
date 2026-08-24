@@ -201,7 +201,7 @@ bool device_decode_file_upload_request_v1(const uint8_t *payload, size_t payload
     size_t cursor = 0;
     uint64_t number;
     if (!read_slice(payload, payload_length, &cursor, &message->path, &message->path_length)) return false;
-    if (!read_slice(payload, payload_length, &cursor, &message->transfer_ticket, &message->transfer_ticket_length)) return false;
+    if (!read_slice(payload, payload_length, &cursor, &message->url, &message->url_length)) return false;
     (void)number;
     return cursor == payload_length;
 }
@@ -210,7 +210,7 @@ bool device_encode_file_upload_request_v1(uint8_t *buffer, size_t capacity, size
     size_t cursor = DEVICE_FRAME_HEADER_BYTES;
     if (!write_header(buffer, capacity, 7, 1, request_id, DEVICE_STATUS_OK)) return false;
     if (!write_slice(buffer, capacity, &cursor, message->path, message->path_length)) return false;
-    if (!write_slice(buffer, capacity, &cursor, message->transfer_ticket, message->transfer_ticket_length)) return false;
+    if (!write_slice(buffer, capacity, &cursor, message->url, message->url_length)) return false;
     *length = cursor;
     return true;
 }
@@ -236,7 +236,7 @@ bool device_decode_file_download_request_v1(const uint8_t *payload, size_t paylo
     size_t cursor = 0;
     uint64_t number;
     if (!read_slice(payload, payload_length, &cursor, &message->path, &message->path_length)) return false;
-    if (!read_slice(payload, payload_length, &cursor, &message->transfer_ticket, &message->transfer_ticket_length)) return false;
+    if (!read_slice(payload, payload_length, &cursor, &message->url, &message->url_length)) return false;
     (void)number;
     return cursor == payload_length;
 }
@@ -245,7 +245,7 @@ bool device_encode_file_download_request_v1(uint8_t *buffer, size_t capacity, si
     size_t cursor = DEVICE_FRAME_HEADER_BYTES;
     if (!write_header(buffer, capacity, 9, 1, request_id, DEVICE_STATUS_OK)) return false;
     if (!write_slice(buffer, capacity, &cursor, message->path, message->path_length)) return false;
-    if (!write_slice(buffer, capacity, &cursor, message->transfer_ticket, message->transfer_ticket_length)) return false;
+    if (!write_slice(buffer, capacity, &cursor, message->url, message->url_length)) return false;
     *length = cursor;
     return true;
 }

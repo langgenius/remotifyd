@@ -25,6 +25,16 @@ void executor_worker_input_read(uv_stream_t *stream, ssize_t received, const uv_
 void executor_worker_handle(ExecutorWorker *worker, const IpcHeader *header, const uint8_t *body);
 void executor_worker_handle_exec_request(ExecutorWorker *worker, const IpcHeader *header, const IpcExecRequestHeader *request);
 void executor_worker_handle_patch_request(ExecutorWorker *worker, const IpcHeader *header, const IpcPatchRequestHeader *request);
+void executor_worker_handle_file_transfer_request(
+    ExecutorWorker *worker,
+    const IpcHeader *header,
+    const IpcFileTransferRequestHeader *request
+);
+void executor_worker_handle_file_stat_request(
+    ExecutorWorker *worker,
+    const IpcHeader *header,
+    const IpcFileStatRequestHeader *request
+);
 IpcStatus executor_worker_patch_apply(
     uv_loop_t *loop,
     const uint8_t *patch,

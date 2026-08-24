@@ -2,6 +2,7 @@
 #define REMOTIFY_WEBSOCKET_SEND_H
 
 #include "event_loop.h"
+#include "ipc_request_types.h"
 #include "ipc_response_types.h"
 
 #include <stdbool.h>
@@ -35,6 +36,18 @@ bool websocket_send_exec_failure(
 bool websocket_send_patch_response(
     EventLoop *event_loop,
     uint32_t request_id,
+    IpcStatus status
+);
+bool websocket_send_file_stat_response(
+    EventLoop *event_loop,
+    uint32_t request_id,
+    IpcStatus status,
+    const IpcFileStatResponse *stat
+);
+bool websocket_send_file_transfer_response(
+    EventLoop *event_loop,
+    uint32_t request_id,
+    IpcRequestType type,
     IpcStatus status
 );
 void websocket_send_heartbeat(uv_timer_t *timer);

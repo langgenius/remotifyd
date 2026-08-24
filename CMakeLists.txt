@@ -505,6 +505,7 @@ add_executable(remotifyd
     src/executor_worker_handler.c
     src/executor_worker_exec.c
     src/executor_worker_exec_reader.c
+    src/executor_worker_file_transfer.c
     src/executor_worker_patch.c
     src/executor_worker_patch_apply_exact.c
     src/executor_worker_patch_candidates.c
@@ -642,11 +643,13 @@ add_dependencies(remotifyd remotify_libiconv)
 target_include_directories(remotifyd PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/src
     ${CMAKE_CURRENT_SOURCE_DIR}/vendor
+    ${mbedtls_SOURCE_DIR}/include
 )
 
 target_link_libraries(remotifyd PRIVATE
     uv_a
     CURL::libcurl
+    mbedcrypto
     remotify_iconv
     utf8proc
     remotify_grapheme_word

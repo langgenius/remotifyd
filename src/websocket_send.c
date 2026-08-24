@@ -325,6 +325,104 @@ failed:
     return false;
 }
 
+bool websocket_send_file_stat_response(
+    EventLoop *event_loop,
+    uint32_t request_id,
+    IpcStatus status,
+    const IpcFileStatResponse *stat
+) {
+    static const uint8_t failed[] = "file stat failed";
+    static const uint8_t not_found[] = "file not found";
+    DeviceFileStatResponseV1 message = {0};
+    size_t capacity = DEVICE_FRAME_HEADER_BYTES + 10 + sizeof(message.sha256);
+    WebSocketSend *send = malloc(sizeof(*send));
+    bool encoded;
+
+    if (send == NULL) return false;
+    send->bytes = malloc(capacity);
+    if (send->bytes == NULL) {
+        free(send);
+        return false;
+    }
+    send->sent = 0;
+    send->consumed_callback = websocket_bytes_consumed;
+    if (status == IPC_STATUS_OK) {
+        message.size_bytes = stat->size_bytes;
+        memcpy(message.sha256, stat->sha256, sizeof(message.sha256));
+        encoded = device_encode_file_stat_response_v1(
+            send->bytes, capacity, &send->length, request_id, &message
+        );
+    } else {
+        const uint8_t *diagnostic = status == IPC_STATUS_NOT_FOUND ? not_found : failed;
+        size_t diagnostic_length = status == IPC_STATUS_NOT_FOUND
+            ? sizeof(not_found) - 1 : sizeof(failed) - 1;
+
+        encoded = device_encode_failure(
+            send->bytes, capacity, &send->length,
+            DEVICE_FILE_STAT_RESPONSE_V1_TYPE_ID, 1, request_id,
+            diagnostic, diagnostic_length
+        );
+    }
+    if (!encoded || !websocket_send_put(event_loop, send)) {
+        send->consumed_callback(send, false);
+        free(send);
+        return false;
+    }
+    return true;
+}
+
+bool websocket_send_file_transfer_response(
+    EventLoop *event_loop,
+    uint32_t request_id,
+    IpcRequestType type,
+    IpcStatus status
+) {
+    static const uint8_t upload_failed[] = "file upload failed";
+    static const uint8_t download_failed[] = "file download failed";
+    DeviceFileUploadResponseV1 upload = {0};
+    DeviceFileDownloadResponseV1 download = {0};
+    WebSocketSend *send = malloc(sizeof(*send));
+    size_t capacity = DEVICE_FRAME_HEADER_BYTES + sizeof(download_failed);
+    bool encoded;
+
+    if (send == NULL) return false;
+    send->bytes = malloc(capacity);
+    if (send->bytes == NULL) {
+        free(send);
+        return false;
+    }
+    send->sent = 0;
+    send->consumed_callback = websocket_bytes_consumed;
+    if (status == IPC_STATUS_OK && type == IPC_REQUEST_FILE_UPLOAD) {
+        encoded = device_encode_file_upload_response_v1(
+            send->bytes, capacity, &send->length, request_id, &upload
+        );
+    } else if (status == IPC_STATUS_OK && type == IPC_REQUEST_FILE_DOWNLOAD) {
+        encoded = device_encode_file_download_response_v1(
+            send->bytes, capacity, &send->length, request_id, &download
+        );
+    } else {
+        const uint8_t *diagnostic = type == IPC_REQUEST_FILE_UPLOAD
+            ? upload_failed : download_failed;
+        size_t diagnostic_length = type == IPC_REQUEST_FILE_UPLOAD
+            ? sizeof(upload_failed) - 1 : sizeof(download_failed) - 1;
+        uint16_t response_type = type == IPC_REQUEST_FILE_UPLOAD
+            ? DEVICE_FILE_UPLOAD_RESPONSE_V1_TYPE_ID
+            : DEVICE_FILE_DOWNLOAD_RESPONSE_V1_TYPE_ID;
+
+        encoded = device_encode_failure(
+            send->bytes, capacity, &send->length,
+            response_type, 1, request_id, diagnostic, diagnostic_length
+        );
+    }
+    if (!encoded || !websocket_send_put(event_loop, send)) {
+        send->consumed_callback(send, false);
+        free(send);
+        return false;
+    }
+    return true;
+}
+
 void websocket_send_heartbeat(uv_timer_t *timer) {
     EventLoop *event_loop = timer->data;
     DeviceHeartbeatRequestV1 message = {0};

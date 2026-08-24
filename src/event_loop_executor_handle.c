@@ -7,8 +7,8 @@
 
 /*
  * IpcProcessCallbacks invokes this function only after the generic pipe loop
- * has assembled one complete Exec response. This callback translates that
- * operation-specific body without moving Exec knowledge into the read loop.
+ * has assembled one complete operation response. This callback translates
+ * that body without moving operation-specific knowledge into the read loop.
  */
 void event_loop_executor_handle(
     EventLoop *event_loop,
@@ -25,6 +25,38 @@ void event_loop_executor_handle(
                 (IpcStatus)header->status
             )) {
             logf_error("failed to queue patch result for WebSocket");
+        }
+        ipc_process_callbacks_remove(&event_loop->callbacks, device_request_id);
+        return;
+    }
+
+    if (header->type == IPC_REQUEST_FILE_STAT) {
+        IpcStatus status = (IpcStatus)header->status;
+
+        if (status == IPC_STATUS_OK && header->body_length != sizeof(IpcFileStatResponse)) {
+            status = IPC_STATUS_FAILED;
+        }
+        if (!websocket_send_file_stat_response(
+                event_loop,
+                device_request_id,
+                status,
+                (const IpcFileStatResponse *)body
+            )) {
+            logf_error("failed to queue file stat result for WebSocket");
+        }
+        ipc_process_callbacks_remove(&event_loop->callbacks, device_request_id);
+        return;
+    }
+
+    if (header->type == IPC_REQUEST_FILE_UPLOAD ||
+        header->type == IPC_REQUEST_FILE_DOWNLOAD) {
+        if (!websocket_send_file_transfer_response(
+                event_loop,
+                device_request_id,
+                (IpcRequestType)header->type,
+                (IpcStatus)header->status
+            )) {
+            logf_error("failed to queue file transfer result for WebSocket");
         }
         ipc_process_callbacks_remove(&event_loop->callbacks, device_request_id);
         return;

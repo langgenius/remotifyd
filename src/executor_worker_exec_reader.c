@@ -126,7 +126,7 @@ static bool executor_worker_exec_iconv(
     return true;
 }
 
-static void executor_worker_exec_stdout_end(ExecutorCommand *command) {
+void executor_worker_exec_stdout_end(ExecutorCommand *command) {
     uv_read_stop((uv_stream_t *)&command->output);
     uv_close((uv_handle_t *)&command->output, executor_worker_exec_handle_closed);
     command->output_pipes--;
@@ -134,7 +134,7 @@ static void executor_worker_exec_stdout_end(ExecutorCommand *command) {
     if (command->output_pipes == 0) executor_worker_exec_report_end(command);
 }
 
-static void executor_worker_exec_stderr_end(ExecutorCommand *command) {
+void executor_worker_exec_stderr_end(ExecutorCommand *command) {
     uv_read_stop((uv_stream_t *)&command->error);
     uv_close((uv_handle_t *)&command->error, executor_worker_exec_handle_closed);
     command->output_pipes--;
@@ -164,13 +164,23 @@ void executor_worker_exec_alloc(uv_handle_t *handle, size_t suggested_size, uv_b
 void executor_worker_exec_stdout_read(uv_stream_t *stream, ssize_t received, const uv_buf_t *buffer) {
     /* uv_spawn attached this command to the concrete stdout pipe handle. */
     ExecutorCommand *command = stream->data;
-    uint8_t *allocation;
+    uint8_t *allocation = NULL;
     uint8_t *input;
     size_t input_length;
     IpcExecReportHeader *report;
     uint8_t *utf8;
     size_t utf8_length;
     size_t bom_length = 0;
+
+    if (received < 0) {
+        if (buffer->base != NULL) {
+            allocation = (uint8_t *)buffer->base - EXECUTOR_WORKER_EXEC_PENDING_BYTES;
+        }
+        if (received != UV_EOF) logf_error("failed to read command stdout: %s", uv_strerror((int)received));
+        executor_worker_exec_stdout_end(command);
+        free(allocation);
+        return;
+    }
 
     /*
      * executor_worker_exec_alloc returns a pointer after the reserved pending
@@ -180,20 +190,6 @@ void executor_worker_exec_stdout_read(uv_stream_t *stream, ssize_t received, con
      *   [ pending prefix ][ libuv read area ][ report header ][ UTF-8 output ]
      */
     allocation = (uint8_t *)buffer->base - EXECUTOR_WORKER_EXEC_PENDING_BYTES;
-
-    if (received == UV_EOF) {
-        executor_worker_exec_stdout_end(command);
-        free(allocation);
-        return;
-    }
-
-    if (received < 0) {
-        logf_error("failed to read command stdout: %s", uv_strerror((int)received));
-        uv_read_stop(stream);
-        uv_close((uv_handle_t *)stream, executor_worker_exec_handle_closed);
-        free(allocation);
-        return;
-    }
 
     /*
      * libuv wrote the new bytes starting at buffer->base. Starting input just
@@ -257,7 +253,7 @@ void executor_worker_exec_stdout_read(uv_stream_t *stream, ssize_t received, con
 
 void executor_worker_exec_stderr_read(uv_stream_t *stream, ssize_t received, const uv_buf_t *buffer) {
     ExecutorCommand *command = stream->data;
-    uint8_t *allocation;
+    uint8_t *allocation = NULL;
     uint8_t *input;
     size_t input_length;
     IpcExecReportHeader *report;
@@ -265,22 +261,18 @@ void executor_worker_exec_stderr_read(uv_stream_t *stream, ssize_t received, con
     size_t utf8_length;
     size_t bom_length = 0;
 
-    /* Recover the start of [pending][read][UTF-8] allocated by the alloc callback. */
-    allocation = (uint8_t *)buffer->base - EXECUTOR_WORKER_EXEC_PENDING_BYTES;
-
-    if (received == UV_EOF) {
+    if (received < 0) {
+        if (buffer->base != NULL) {
+            allocation = (uint8_t *)buffer->base - EXECUTOR_WORKER_EXEC_PENDING_BYTES;
+        }
+        if (received != UV_EOF) logf_error("failed to read command stderr: %s", uv_strerror((int)received));
         executor_worker_exec_stderr_end(command);
         free(allocation);
         return;
     }
 
-    if (received < 0) {
-        logf_error("failed to read command stderr: %s", uv_strerror((int)received));
-        uv_read_stop(stream);
-        uv_close((uv_handle_t *)stream, executor_worker_exec_handle_closed);
-        free(allocation);
-        return;
-    }
+    /* Recover the start of [pending][read][UTF-8] allocated by the alloc callback. */
+    allocation = (uint8_t *)buffer->base - EXECUTOR_WORKER_EXEC_PENDING_BYTES;
 
     /* Place stderr's retained suffix immediately before the new libuv bytes. */
     input = (uint8_t *)buffer->base - command->error_pending_length;

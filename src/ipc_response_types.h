@@ -19,4 +19,11 @@ typedef struct IpcExecReportHeader {
 
 _Static_assert(sizeof(IpcExecReportHeader) == 64, "unexpected IpcExecReportHeader size");
 
+typedef struct IpcFileStatResponse {
+    uint64_t size_bytes;
+    uint8_t sha256[32];
+} IpcFileStatResponse;
+
+_Static_assert(sizeof(IpcFileStatResponse) == 40, "unexpected IpcFileStatResponse size");
+
 #endif

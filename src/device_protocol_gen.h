@@ -87,8 +87,8 @@ bool device_encode_file_stat_response_v1(uint8_t *buffer, size_t capacity, size_
 typedef struct DeviceFileUploadRequestV1 {
     const uint8_t *path;
     size_t path_length;
-    const uint8_t *transfer_ticket;
-    size_t transfer_ticket_length;
+    const uint8_t *url;
+    size_t url_length;
 } DeviceFileUploadRequestV1;
 
 bool device_decode_file_upload_request_v1(const uint8_t *payload, size_t payload_length, DeviceFileUploadRequestV1 *message);
@@ -106,8 +106,8 @@ bool device_encode_file_upload_response_v1(uint8_t *buffer, size_t capacity, siz
 typedef struct DeviceFileDownloadRequestV1 {
     const uint8_t *path;
     size_t path_length;
-    const uint8_t *transfer_ticket;
-    size_t transfer_ticket_length;
+    const uint8_t *url;
+    size_t url_length;
 } DeviceFileDownloadRequestV1;
 
 bool device_decode_file_download_request_v1(const uint8_t *payload, size_t payload_length, DeviceFileDownloadRequestV1 *message);

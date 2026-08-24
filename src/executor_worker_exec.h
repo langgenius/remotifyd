@@ -10,8 +10,8 @@ enum { EXECUTOR_WORKER_EXEC_PENDING_BYTES = 16 };
 
 /*
  * One ExecutorCommand owns one real command process and its three stdio
- * pipes. output_pipes decides when stdout and stderr have both reached EOF;
- * open_handles decides when the allocation can finally be released.
+ * pipes. The terminal report waits for both process_exited and zero
+ * output_pipes; open_handles decides when the allocation can be released.
  */
 typedef struct ExecutorCommand {
     ExecutorWorker *worker;
@@ -25,6 +25,7 @@ typedef struct ExecutorCommand {
 
     uint8_t output_pipes;
     uint8_t open_handles;
+    bool process_exited;
     int32_t exit_code;
 
     iconv_t output_iconv;

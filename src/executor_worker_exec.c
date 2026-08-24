@@ -38,6 +38,7 @@ bool executor_worker_exec_report(ExecutorCommand *command, IpcResponseType respo
 void executor_worker_exec_report_end(ExecutorCommand *command) {
     IpcExecReportHeader report = {0};
 
+    if (!command->process_exited || command->output_pipes != 0) return;
     report.exit_code = command->exit_code;
     executor_worker_exec_report(command, IPC_END, &report);
 }
@@ -47,8 +48,9 @@ static void executor_command_exited(uv_process_t *process, int64_t exit_status, 
 
     (void)term_signal;
 
-    /* The two output EOF callbacks publish this value in the terminal report. */
     command->exit_code = (int32_t)exit_status;
+    command->process_exited = true;
+    executor_worker_exec_report_end(command);
 
     /* stdout and stderr remain alive until their readers receive UV_EOF. */
     uv_close((uv_handle_t *)process, executor_worker_exec_handle_closed);
@@ -106,6 +108,13 @@ static void executor_command_input(ExecutorCommand *command, const uint8_t *inpu
 
     /* The copied bytes must remain alive until libuv invokes the callback. */
     write = malloc(sizeof(*write) + input_length);
+
+    if (write == NULL) {
+        logf_error("failed to allocate command input");
+        uv_close((uv_handle_t *)&command->input, executor_worker_exec_handle_closed);
+        return;
+    }
+
     memcpy(write + 1, input, input_length);
     buffer = uv_buf_init((char *)(write + 1), (unsigned int)input_length);
     result = uv_write(write, (uv_stream_t *)&command->input, &buffer, 1, executor_command_input_written);
@@ -253,6 +262,9 @@ void executor_worker_handle_exec_request(
     command->process.data = command;
     result = uv_spawn(&worker->loop, &command->process, &options);
 
+    /* uv_spawn initializes the process handle even when the child cannot start. */
+    command->open_handles++;
+
     /* uv_spawn consumes file, args, and cwd before returning. */
     free(cwd);
     free(cmd);
@@ -260,13 +272,12 @@ void executor_worker_handle_exec_request(
     if (result != 0) {
         logf_error("failed to start command: %s", uv_strerror(result));
         executor_worker_exec_report_failed(command, result);
+        uv_close((uv_handle_t *)&command->process, executor_worker_exec_handle_closed);
         uv_close((uv_handle_t *)&command->input, executor_worker_exec_handle_closed);
         uv_close((uv_handle_t *)&command->output, executor_worker_exec_handle_closed);
         uv_close((uv_handle_t *)&command->error, executor_worker_exec_handle_closed);
         return;
     }
-
-    command->open_handles++;
 
     {
         IpcExecReportHeader report = {
@@ -284,12 +295,14 @@ void executor_worker_handle_exec_request(
 
     if (result != 0) {
         logf_error("failed to start command output reader: %s", uv_strerror(result));
+        executor_worker_exec_stdout_end(command);
     }
 
     result = uv_read_start((uv_stream_t *)&command->error, executor_worker_exec_alloc, executor_worker_exec_stderr_read);
 
     if (result != 0) {
         logf_error("failed to start command error reader: %s", uv_strerror(result));
+        executor_worker_exec_stderr_end(command);
     }
 
     executor_command_input(command, input_bytes, request->standard_input_length);

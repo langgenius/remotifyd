@@ -88,6 +88,108 @@ static bool websocket_decode_heartbeat_response(
     return device_decode_heartbeat_response_v1(payload, payload_length, &response);
 }
 
+static bool websocket_decode_file_stat(
+    EventLoop *event_loop,
+    const DeviceFrameHeader *header,
+    const uint8_t *payload,
+    size_t payload_length
+) {
+    DeviceFileStatRequestV1 request;
+    IpcFileStatRequestHeader ipc_request;
+    uint8_t body[sizeof(ipc_request) + DEVICE_MAXIMUM_FRAME_BYTES];
+    IpcHeader ipc_header;
+    bool dispatched;
+
+    if (!device_decode_file_stat_request_v1(payload, payload_length, &request)) return false;
+    if (request.path_length == 0) return false;
+    ipc_request.path_length = (uint32_t)request.path_length;
+    memcpy(body, &ipc_request, sizeof(ipc_request));
+    memcpy(body + sizeof(ipc_request), request.path, request.path_length);
+    ipc_header = (IpcHeader){
+        .request_id = header->request_id,
+        .body_length = (uint32_t)(sizeof(ipc_request) + request.path_length),
+        .type = IPC_REQUEST_FILE_STAT
+    };
+    if (!ipc_process_callbacks_put(
+            &event_loop->callbacks,
+            uv_now(&event_loop->loop),
+            9 * 60 * 1000,
+            header->request_id,
+            event_loop_executor_handle
+        )) return false;
+    dispatched = dispatch_request_to_executor(event_loop, &ipc_header, body);
+    if (!dispatched) ipc_process_callbacks_remove(&event_loop->callbacks, header->request_id);
+    return dispatched;
+}
+
+static bool websocket_dispatch_file_transfer(
+    EventLoop *event_loop,
+    const DeviceFrameHeader *header,
+    const uint8_t *path,
+    size_t path_length,
+    const uint8_t *url,
+    size_t url_length,
+    IpcRequestType type
+) {
+    IpcFileTransferRequestHeader ipc_request = {
+        .path_length = (uint32_t)path_length,
+        .url_length = (uint32_t)url_length
+    };
+    uint8_t body[sizeof(ipc_request) + DEVICE_MAXIMUM_FRAME_BYTES];
+    IpcHeader ipc_header;
+    bool dispatched;
+
+    if (path_length == 0 || url_length == 0) return false;
+    memcpy(body, &ipc_request, sizeof(ipc_request));
+    memcpy(body + sizeof(ipc_request), path, path_length);
+    memcpy(body + sizeof(ipc_request) + path_length, url, url_length);
+    ipc_header = (IpcHeader){
+        .request_id = header->request_id,
+        .body_length = (uint32_t)(sizeof(ipc_request) + path_length + url_length),
+        .type = type
+    };
+    if (!ipc_process_callbacks_put(
+            &event_loop->callbacks,
+            uv_now(&event_loop->loop),
+            9 * 60 * 1000,
+            header->request_id,
+            event_loop_executor_handle
+        )) return false;
+    dispatched = dispatch_request_to_executor(event_loop, &ipc_header, body);
+    if (!dispatched) ipc_process_callbacks_remove(&event_loop->callbacks, header->request_id);
+    return dispatched;
+}
+
+static bool websocket_decode_file_upload(
+    EventLoop *event_loop,
+    const DeviceFrameHeader *header,
+    const uint8_t *payload,
+    size_t payload_length
+) {
+    DeviceFileUploadRequestV1 request;
+
+    if (!device_decode_file_upload_request_v1(payload, payload_length, &request)) return false;
+    return websocket_dispatch_file_transfer(
+        event_loop, header, request.path, request.path_length,
+        request.url, request.url_length, IPC_REQUEST_FILE_UPLOAD
+    );
+}
+
+static bool websocket_decode_file_download(
+    EventLoop *event_loop,
+    const DeviceFrameHeader *header,
+    const uint8_t *payload,
+    size_t payload_length
+) {
+    DeviceFileDownloadRequestV1 request;
+
+    if (!device_decode_file_download_request_v1(payload, payload_length, &request)) return false;
+    return websocket_dispatch_file_transfer(
+        event_loop, header, request.path, request.path_length,
+        request.url, request.url_length, IPC_REQUEST_FILE_DOWNLOAD
+    );
+}
+
 static bool websocket_decode_apply_patch(
     EventLoop *event_loop,
     const DeviceFrameHeader *header,
@@ -148,6 +250,18 @@ bool websocket_decode(
 
     if (header.type_id == DEVICE_HEARTBEAT_RESPONSE_V1_TYPE_ID && header.version == 1) {
         return websocket_decode_heartbeat_response(payload, payload_length);
+    }
+
+    if (header.type_id == DEVICE_FILE_STAT_REQUEST_V1_TYPE_ID && header.version == 1) {
+        return websocket_decode_file_stat(event_loop, &header, payload, payload_length);
+    }
+
+    if (header.type_id == DEVICE_FILE_UPLOAD_REQUEST_V1_TYPE_ID && header.version == 1) {
+        return websocket_decode_file_upload(event_loop, &header, payload, payload_length);
+    }
+
+    if (header.type_id == DEVICE_FILE_DOWNLOAD_REQUEST_V1_TYPE_ID && header.version == 1) {
+        return websocket_decode_file_download(event_loop, &header, payload, payload_length);
     }
 
     if (header.type_id == DEVICE_APPLY_PATCH_REQUEST_V1_TYPE_ID && header.version == 1) {

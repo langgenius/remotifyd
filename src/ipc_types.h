@@ -16,7 +16,8 @@ typedef enum IpcResponseType {
 typedef enum IpcStatus {
     IPC_STATUS_OK = 0,
     IPC_STATUS_FAILED = 1,
-    IPC_STATUS_UNCERTAIN = 2
+    IPC_STATUS_UNCERTAIN = 2,
+    IPC_STATUS_NOT_FOUND = 3
 } IpcStatus;
 
 typedef struct IpcHeader {
