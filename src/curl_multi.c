@@ -7,9 +7,6 @@ bool init_curl_multi(EventLoop *event_loop) {
 
     if (multi == NULL) return false;
 
-    event_loop->curl_resume_socket = CURL_SOCKET_BAD;
-    event_loop->websocket_socket = CURL_SOCKET_BAD;
-
     if (curl_multi_setopt(
             multi,
             CURLMOPT_SOCKETFUNCTION,

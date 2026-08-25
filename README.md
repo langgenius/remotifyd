@@ -46,7 +46,7 @@ stdout, so log bytes can never corrupt an IPC frame.
 | `ExecutorWorker` | `executor_worker_run` stack | the child loop returns |
 | `CURLM` | parent `EventLoop` | the parent process shuts down |
 | `CURL` WebSocket easy handle | one connection attempt | connection cleanup removes and destroys it |
-| `uv_poll_t websocket_poll` | one WebSocket connection | its `uv_close` callback runs |
+| per-socket `CurlSocketWatch` | one curl-published socket | its `uv_close` callback runs |
 | queued `WebSocketSend` | WebSocket send queue | sent successfully or discarded with the failed connection |
 | incomplete WebSocket message | parent `EventLoop` | one WebSocket message boundary is reached |
 | incomplete IPC body | the receiving loop's `IpcReadBuffer` | one complete IPC frame is handled |
@@ -83,8 +83,9 @@ load daemon State
 ```
 
 `EventLoop` is allocated on `process_main`'s stack and outlives `uv_run`.
-Because every parent-owned handle is embedded in that structure, callbacks can
-use `handle->data = event_loop` without separately allocated context objects.
+Process-wide handles are embedded in it. Curl socket watchers are allocated
+per socket published by libcurl; each watcher points back to the same
+`EventLoop`.
 
 The Executor has a different stack object and a different loop. It adopts its
 inherited stdin and stdout as libuv pipes, starts the IPC input reader, and
@@ -105,13 +106,14 @@ connect_remotify
     -> initialize CURL easy handle
     -> add easy handle to CURLM
     -> curl_multi_socket_action(CURL_SOCKET_TIMEOUT)
-    -> curl asks which socket readiness it needs
-    -> curl_socket_status_updated configures uv_poll_t
-    -> libuv observes readable/writable
-    -> curl_socket_event calls curl_multi_socket_action
+    -> curl asks which socket readiness each published socket needs
+    -> one CurlSocketWatch is created per published socket
+    -> libuv observes readable/writable on that watcher
+    -> curl_socket_ready calls curl_multi_socket_action
     -> curl advances its private state machine
     -> CURLMSG_DONE confirms Upgrade completion
-    -> the same uv_poll_t switches to websocket_socket_event
+    -> CURLINFO_ACTIVESOCKET identifies the winning watcher
+    -> non-active watchers close; the winner switches to websocket_socket_event
 ```
 
 libuv does not perform TLS or WebSocket Upgrade. It only reports socket
@@ -203,14 +205,15 @@ The cleanup order is intentional:
 
 ```text
 stop websocket_send_timer
+    -> stop every curl socket watcher
     -> remove the easy handle from CURLM
-    -> recover and free the easy handle's header list
+    -> recover the easy handle's header-list pointer
     -> curl_easy_cleanup
+    -> free the recovered header list
     -> clear connection message state
-    -> stop and uv_close websocket_poll
-    -> wait for the poll close callback
+    -> uv_close every remaining socket watcher
+    -> wait for the last watcher close callback
     -> discard the old connection's send queue
-    -> zero websocket_poll storage for reuse
     -> schedule connect_remotify after 5 seconds
 ```
 
@@ -218,8 +221,9 @@ Queued frames are connection-owned and are never replayed after reconnect.
 Discarding the queue invokes every `consumed_callback` with `succeed = false`,
 so payload owners still receive their ordinary release notification.
 
-The `uv_poll_t` storage cannot be reused when `uv_close` is merely called. It
-is reset only from the close callback, after libuv has released the old handle.
+A `CurlSocketWatch` is freed only from its poll close callback, after libuv has
+released the embedded `uv_poll_t`. Curl remains the sole owner of the socket
+descriptor itself.
 
 ## IPC lifetime
 

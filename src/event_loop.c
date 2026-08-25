@@ -117,6 +117,9 @@ static void cleanup_websocket(uv_timer_t *timer) {
     uv_timer_stop(&event_loop->websocket_send_timer);
     uv_timer_stop(&event_loop->heartbeat_timer);
 
+    /* libuv must stop polling every descriptor before libcurl may close it. */
+    stop_websocket_resources(event_loop);
+
     /*
      * An easy handle must leave the multi handle before it is destroyed.
      * Keeping that order lets the long-lived multi handle release all state
@@ -150,10 +153,6 @@ static void schedule_connect_remotify(uv_handle_t *handle) {
     /* Frames owned by the previous connection are never sent after reconnect. */
     websocket_send_clear(event_loop);
     ipc_process_callbacks_clear(&event_loop->callbacks);
-
-    /* The poll is either absent or fully closed, so its storage can be reset. */
-    event_loop->websocket_poll = (uv_poll_t){0};
-    event_loop->websocket_socket = CURL_SOCKET_BAD;
 
     result = uv_timer_start(
         &event_loop->timer,

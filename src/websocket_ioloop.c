@@ -29,7 +29,7 @@ void websocket_write(uv_timer_t *timer) {
              * will wake the same writer after this socket becomes writable.
              */
             poll_result = uv_poll_start(
-                &event_loop->websocket_poll,
+                &event_loop->websocket_watch->poll,
                 UV_READABLE | UV_WRITABLE | UV_DISCONNECT,
                 websocket_socket_event
             );
@@ -148,7 +148,7 @@ websocket_closed:
      * Only the read side observes the final connection end and schedules the
      * one cleanup for this WebSocket lifecycle.
      */
-    uv_poll_stop(&event_loop->websocket_poll);
+    uv_poll_stop(&event_loop->websocket_watch->poll);
     schedule_cleanup_websocket(event_loop);
 }
 
@@ -157,7 +157,8 @@ void websocket_socket_event(
     int status,
     int events
 ) {
-    EventLoop *event_loop = poll->data;
+    CurlSocketWatch *watch = poll->data;
+    EventLoop *event_loop = watch->event_loop;
     int result;
 
     if (status < 0) {

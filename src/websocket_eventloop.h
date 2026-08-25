@@ -21,6 +21,7 @@ int curl_timer_status_updated(
 
 void check_websocket_connect_result(EventLoop *event_loop);
 void close_websocket_socket(EventLoop *event_loop);
+void stop_websocket_resources(EventLoop *event_loop);
 void cleanup_websocket_resource(
     EventLoop *event_loop,
     uv_close_cb after_cleaned_cb

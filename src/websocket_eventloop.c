@@ -5,11 +5,65 @@
 #include "websocket_ioloop.h"
 #include "websocket_send.h"
 
+#include <stdlib.h>
+
 #if defined(_WIN32)
 #include <winsock2.h>
 #else
 #include <sys/socket.h>
 #endif
+
+static CurlSocketWatch *find_socket_watch(
+    EventLoop *event_loop,
+    curl_socket_t socket
+) {
+    CurlSocketWatch *watch;
+
+    for (watch = event_loop->curl_socket_watches;
+         watch != NULL;
+         watch = watch->next) {
+        if (watch->socket == socket) return watch;
+    }
+
+    return NULL;
+}
+
+static void socket_watch_closed(uv_handle_t *handle) {
+    CurlSocketWatch *watch = handle->data;
+    EventLoop *event_loop = watch->event_loop;
+    CurlSocketWatch **slot = &event_loop->curl_socket_watches;
+    uv_close_cb after_closed;
+
+    while (*slot != watch) slot = &(*slot)->next;
+    *slot = watch->next;
+    free(watch);
+
+    if (event_loop->curl_socket_watches != NULL ||
+        event_loop->socket_watches_closed == NULL) return;
+
+    after_closed = event_loop->socket_watches_closed;
+    event_loop->socket_watches_closed = NULL;
+    after_closed((uv_handle_t *)&event_loop->timer);
+}
+
+static void close_socket_watch(CurlSocketWatch *watch) {
+    if (uv_is_closing((uv_handle_t *)&watch->poll)) return;
+
+    uv_poll_stop(&watch->poll);
+    uv_close((uv_handle_t *)&watch->poll, socket_watch_closed);
+}
+
+static void close_socket_watches_except(
+    EventLoop *event_loop,
+    CurlSocketWatch *keep
+) {
+    CurlSocketWatch *watch;
+
+    for (watch = event_loop->curl_socket_watches;
+         watch != NULL;
+         watch = watch->next)
+        if (watch != keep) close_socket_watch(watch);
+}
 
 void close_websocket_socket(EventLoop *event_loop) {
     /*
@@ -18,9 +72,9 @@ void close_websocket_socket(EventLoop *event_loop) {
      * cleanup path reached by websocket_read.
      */
 #if defined(_WIN32)
-    shutdown(event_loop->websocket_socket, SD_BOTH);
+    shutdown(event_loop->websocket_watch->socket, SD_BOTH);
 #else
-    shutdown(event_loop->websocket_socket, SHUT_RDWR);
+    shutdown(event_loop->websocket_watch->socket, SHUT_RDWR);
 #endif
 }
 
@@ -28,25 +82,30 @@ void cleanup_websocket_resource(
     EventLoop *event_loop,
     uv_close_cb after_cleaned_cb
 ) {
-    if (event_loop->websocket_socket == CURL_SOCKET_BAD) {
-        /*
-         * No poll was initialized, so the cleanup continuation can run now.
-         * It only reads handle->data, which the process-owned timer also
-         * carries for this EventLoop.
-         */
-        after_cleaned_cb((uv_handle_t *)&event_loop->timer);
-        return;
-    }
+    event_loop->websocket_watch = NULL;
+    event_loop->socket_watches_closed = after_cleaned_cb;
+    close_socket_watches_except(event_loop, NULL);
 
-    uv_poll_stop(&event_loop->websocket_poll);
-    uv_close(
-        (uv_handle_t *)&event_loop->websocket_poll,
-        after_cleaned_cb
-    );
+    if (event_loop->curl_socket_watches == NULL) {
+        event_loop->socket_watches_closed = NULL;
+        after_cleaned_cb((uv_handle_t *)&event_loop->timer);
+    }
+}
+
+void stop_websocket_resources(EventLoop *event_loop) {
+    CurlSocketWatch *watch;
+
+    for (watch = event_loop->curl_socket_watches;
+         watch != NULL;
+         watch = watch->next)
+        if (!uv_is_closing((uv_handle_t *)&watch->poll))
+            uv_poll_stop(&watch->poll);
 }
 
 void check_websocket_connect_result(EventLoop *event_loop) {
     CURLMsg *message;
+    CurlSocketWatch *watch;
+    curl_socket_t active_socket;
     int messages_left;
     int result;
 
@@ -68,12 +127,22 @@ void check_websocket_connect_result(EventLoop *event_loop) {
             return;
         }
 
-        /*
-         * TCP, TLS, and WebSocket Upgrade are complete. The same poll now
-         * stops driving curl multi and starts reading WebSocket payloads.
-         */
+        if (curl_easy_getinfo(
+                event_loop->websocket,
+                CURLINFO_ACTIVESOCKET,
+                &active_socket
+            ) != CURLE_OK ||
+            active_socket == CURL_SOCKET_BAD ||
+            (watch = find_socket_watch(event_loop, active_socket)) == NULL) {
+            logf_error("failed to identify active WebSocket socket");
+            schedule_cleanup_websocket(event_loop);
+            return;
+        }
+
+        /* Only libcurl's selected socket survives as the WebSocket watcher. */
+        event_loop->websocket_watch = watch;
         result = uv_poll_start(
-            &event_loop->websocket_poll,
+            &watch->poll,
             UV_READABLE | UV_DISCONNECT,
             websocket_socket_event
         );
@@ -86,6 +155,8 @@ void check_websocket_connect_result(EventLoop *event_loop) {
             schedule_cleanup_websocket(event_loop);
             return;
         }
+
+        close_socket_watches_except(event_loop, watch);
 
         /*
          * Heartbeat is an application request that refreshes the authenticated
@@ -115,12 +186,13 @@ void check_websocket_connect_result(EventLoop *event_loop) {
  * Before WebSocket Upgrade completes, readiness on the connection socket
  * tells libcurl that TCP or TLS can continue.
  */
-static void websocket_connect_socket_ready(
+static void curl_socket_ready(
     uv_poll_t *poll,
     int status,
     int events
 ) {
-    EventLoop *event_loop = poll->data;
+    CurlSocketWatch *watch = poll->data;
+    EventLoop *event_loop = watch->event_loop;
     int action = 0;
     int running_handles = 0;
     CURLMcode result;
@@ -138,54 +210,14 @@ static void websocket_connect_socket_ready(
      */
     result = curl_multi_socket_action(
         event_loop->multi,
-        event_loop->websocket_socket,
+        watch->socket,
         action,
         &running_handles
     );
 
     if (result != CURLM_OK) {
         logf_error(
-            "failed to advance WebSocket socket: %s",
-            curl_multi_strerror(result)
-        );
-        schedule_cleanup_websocket(event_loop);
-        return;
-    }
-
-    check_websocket_connect_result(event_loop);
-}
-
-/*
- * The multi-owned socket never contains WebSocket payload. Readability only
- * means that libcurl can resume work which waited for an internal event, such
- * as completion of threaded DNS resolution.
- */
-static void curl_resume_socket_ready(
-    uv_poll_t *poll,
-    int status,
-    int events
-) {
-    EventLoop *event_loop = poll->data;
-    int running_handles = 0;
-    int action;
-    CURLMcode result;
-
-    (void)events;
-
-    action = status < 0
-        ? CURL_CSELECT_ERR
-        : CURL_CSELECT_IN;
-
-    result = curl_multi_socket_action(
-        event_loop->multi,
-        event_loop->curl_resume_socket,
-        action,
-        &running_handles
-    );
-
-    if (result != CURLM_OK) {
-        logf_error(
-            "failed to resume curl: %s",
+            "failed to advance curl socket: %s",
             curl_multi_strerror(result)
         );
         schedule_cleanup_websocket(event_loop);
@@ -261,88 +293,50 @@ int curl_socket_watch_requested(
     void *socket_context
 ) {
     EventLoop *event_loop = context;
+    CurlSocketWatch *watch = socket_context;
     int events;
     int result;
 
-    /* An internal easy handle identifies the socket which resumes CURLM. */
-    if (easy != event_loop->websocket) {
-        if (action == CURL_POLL_REMOVE) {
-            uv_poll_stop(&event_loop->curl_resume_poll);
-            return 0;
-        }
+    (void)easy;
 
-        /* CURLM owns this socket, so its uv poll is initialized only once. */
-        if (event_loop->curl_resume_socket == CURL_SOCKET_BAD) {
-            result = uv_poll_init_socket(
-                &event_loop->loop,
-                &event_loop->curl_resume_poll,
-                socket
-            );
-
-            if (result != 0) {
-                logf_error(
-                    "failed to initialize curl resume poll: %s",
-                    uv_strerror(result)
-                );
-                return -1;
-            }
-
-            event_loop->curl_resume_socket = socket;
-            event_loop->curl_resume_poll.data = event_loop;
-        }
-
-        result = uv_poll_start(
-            &event_loop->curl_resume_poll,
-            UV_READABLE,
-            curl_resume_socket_ready
-        );
-
-        if (result != 0) {
-            logf_error(
-                "failed to watch curl resume socket: %s",
-                uv_strerror(result)
-            );
-            return -1;
-        }
-
-        return 0;
-    }
-
-    /* REMOVE can arrive after cleanup has already cleared socket_context. */
+    /* libcurl owns the descriptor; REMOVE only ends our readiness interest. */
     if (action == CURL_POLL_REMOVE) {
-        if (socket_context != NULL) {
-            uv_poll_stop(&event_loop->websocket_poll);
-        }
+        if (watch != NULL &&
+            !uv_is_closing((uv_handle_t *)&watch->poll))
+            uv_poll_stop(&watch->poll);
 
         return 0;
     }
 
-    /*
-     * This EventLoop owns one WebSocket and therefore one curl socket.
-     * socket_context is only used to identify the first notification.
-     */
-    if (socket_context == NULL) {
+    if (watch == NULL) {
+        watch = calloc(1, sizeof(*watch));
+        if (watch == NULL) return -1;
+
+        watch->event_loop = event_loop;
+        watch->socket = socket;
         result = uv_poll_init_socket(
             &event_loop->loop,
-            &event_loop->websocket_poll,
+            &watch->poll,
             socket
         );
 
         if (result != 0) {
+            free(watch);
             logf_error(
-                "failed to initialize WebSocket socket: %s",
+                "failed to initialize curl socket watch: %s",
                 uv_strerror(result)
             );
             return -1;
         }
 
-        event_loop->websocket_poll.data = event_loop;
-        event_loop->websocket_socket = socket;
+        watch->poll.data = watch;
+        watch->next = event_loop->curl_socket_watches;
+        event_loop->curl_socket_watches = watch;
 
         if (curl_multi_assign(
                 event_loop->multi,
                 socket,
-                &event_loop->websocket_poll
+                watch
             ) != CURLM_OK) {
             return -1;
         }
@@ -357,14 +351,14 @@ int curl_socket_watch_requested(
     }
 
     result = uv_poll_start(
-        &event_loop->websocket_poll,
+        &watch->poll,
         events,
-        websocket_connect_socket_ready
+        curl_socket_ready
     );
 
     if (result != 0) {
         logf_error(
-            "failed to watch WebSocket socket: %s",
+            "failed to watch curl socket: %s",
             uv_strerror(result)
         );
         return -1;

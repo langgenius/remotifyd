@@ -11,12 +11,21 @@
 #include <stdint.h>
 #include <uv.h>
 
+typedef struct EventLoop EventLoop;
+
+typedef struct CurlSocketWatch {
+    uv_poll_t poll;
+    EventLoop *event_loop;
+    curl_socket_t socket;
+    struct CurlSocketWatch *next;
+} CurlSocketWatch;
+
 /*
  * EventLoop is allocated by main and remains alive until uv_run returns.
  * Every asynchronous handle can therefore point back to this one owner
  * without introducing globals or separately allocated callback contexts.
  */
-typedef struct EventLoop {
+struct EventLoop {
     uv_loop_t loop;
     State state;
 
@@ -30,11 +39,10 @@ typedef struct EventLoop {
 
     IpcProcessCallbacks callbacks;
 
-    /* Readiness on this multi-owned socket only resumes libcurl. */
-    uv_poll_t curl_resume_poll;
-    curl_socket_t curl_resume_socket;
-
-    uv_poll_t websocket_poll;
+    /* libcurl can publish several connection candidates before one wins. */
+    CurlSocketWatch *curl_socket_watches;
+    CurlSocketWatch *websocket_watch;
+    uv_close_cb socket_watches_closed;
 
     /*
      * The queue preserves frame order while a partial curl write waits for
@@ -44,13 +52,12 @@ typedef struct EventLoop {
     uv_timer_t websocket_send_timer;
     uv_timer_t heartbeat_timer;
     CircularQueue websocket_send_queue;
-    curl_socket_t websocket_socket;
     CURLM *multi;
     CURL *websocket;
     uint8_t websocket_message[DEVICE_MAXIMUM_FRAME_BYTES];
     size_t websocket_message_length;
     uint64_t next_request_id;
-} EventLoop;
+};
 
 int event_loop_run(EventLoop *event_loop);
 void connect_remotify(uv_timer_t *timer);
