@@ -349,6 +349,7 @@ if(NOT WIN32)
         INSTALL_DIR ${REMOTIFY_LIBIDN2_INSTALL}
         CONFIGURE_COMMAND
             ${CMAKE_COMMAND} -E env
+            CC=${CMAKE_C_COMPILER}
             ${REMOTIFY_DEPENDENCY_ENV}
             <SOURCE_DIR>/configure
             --prefix=<INSTALL_DIR>
@@ -662,6 +663,7 @@ target_link_libraries(remotifyd PRIVATE
 
 if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
     target_compile_definitions(remotifyd PRIVATE _GNU_SOURCE)
+    target_link_options(remotifyd PRIVATE -static)
 endif()
 
 if(WIN32)
