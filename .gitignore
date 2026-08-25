@@ -1,2 +1,17 @@
 /build/
 /build-*/
+__pycache__/
+*.py[cod]
+/vendor/brotli/
+/vendor/libcurl/
+/vendor/libcurl-*/
+/vendor/libgrapheme-*/
+/vendor/libiconv/
+/vendor/libidn2/
+/vendor/libuv/
+/vendor/libuv-*/
+/vendor/mbedtls/
+/vendor/mbedtls-*/
+/vendor/nghttp2/
+/vendor/utf8proc-*/
+/vendor/zstd/

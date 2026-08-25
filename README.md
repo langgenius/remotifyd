@@ -382,16 +382,22 @@ thread, or process-lifecycle abstraction.
 
 ## Build
 
-The daemon requires CMake, libuv, libcurl with WebSocket support, and iconv.
+The daemon requires CMake and a C toolchain. Its pinned native dependencies are
+downloaded and built by CMake.
 
 ```sh
-cmake -S daemon -B daemon/build
-cmake --build daemon/build --parallel
+cmake -S . -B build
+cmake --build build --parallel
 ```
 
-Generated device protocol sources live in `daemon/src/device_protocol_gen.*`.
-They are produced from the shared Go declarations under `protocol/schema`:
+Generated device protocol sources live in `src/device_protocol_gen.*` and are
+checked in so this repository builds independently. Their schema source lives
+in the parent [Remotify](https://github.com/langgenius/remotify) repository.
+From a recursive Remotify checkout, regenerate both the Go and C protocol
+implementations with:
 
 ```sh
 make -C protocol generate
 ```
+
+Commit regenerated C sources here before updating Remotify's submodule pointer.
