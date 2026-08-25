@@ -1,5 +1,7 @@
 # Remotify daemon
 
+[![C tests](https://github.com/langgenius/remotifyd/actions/workflows/tests.yml/badge.svg)](https://github.com/langgenius/remotifyd/actions/workflows/tests.yml)
+
 Licensed under GPL-3.0-only. See [LICENSE](LICENSE).
 
 `remotifyd` is a small native device daemon built from libuv, libcurl, iconv,

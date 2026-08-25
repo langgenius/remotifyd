@@ -1,0 +1,40 @@
+name: C tests
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  tests:
+    runs-on: ubuntu-24.04
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install build tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential \
+            cmake \
+            curl \
+            ca-certificates \
+            xz-utils \
+            bzip2 \
+            python3 \
+            perl
+
+      - name: Configure tests
+        run: cmake -S . -B build -DREMOTIFY_TARGET=linux -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=ON
+
+      - name: Build tests
+        run: cmake --build build --target remotifyd_patch_tests --parallel 3
+
+      - name: Run tests
+        run: ctest --test-dir build --output-on-failure
