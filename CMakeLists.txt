@@ -409,6 +409,11 @@ set(CURL_USE_PKGCONFIG OFF CACHE BOOL "" FORCE)
 set(ENABLE_CURL_MANUAL OFF CACHE BOOL "" FORCE)
 set(ENABLE_PROGRAMS OFF CACHE BOOL "" FORCE)
 set(ENABLE_TESTING OFF CACHE BOOL "" FORCE)
+if(WIN32)
+    # This socket-driven loop cannot receive the threaded resolver's Windows
+    # completion wakeup, so resolve before curl publishes connection sockets.
+    set(ENABLE_THREADED_RESOLVER OFF CACHE BOOL "" FORCE)
+endif()
 set(MBEDTLS_FATAL_WARNINGS OFF CACHE BOOL "" FORCE)
 set(CURL_USE_OPENSSL OFF CACHE BOOL "" FORCE)
 set(CURL_USE_SCHANNEL OFF CACHE BOOL "" FORCE)
