@@ -1,5 +1,7 @@
 # Remotify daemon
 
+Licensed under GPL-3.0-only. See [LICENSE](LICENSE).
+
 `remotifyd` is a small native device daemon built from libuv, libcurl, iconv,
 and the operating-system process APIs exposed by libuv. The implementation is
 asynchronous, but deliberately keeps ownership centralized: each process has
