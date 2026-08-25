@@ -50,4 +50,10 @@
 #undef MBEDTLS_RIPEMD160_C
 #undef MBEDTLS_SHA3_C
 
+/* Mbed TLS only enables its getrandom syscall path for glibc Linux. Our musl
+ * release must not fall back to the indefinitely blocking /dev/random. */
+#if defined(__linux__)
+#define MBEDTLS_PLATFORM_DEV_RANDOM "/dev/urandom"
+#endif
+
 #endif
