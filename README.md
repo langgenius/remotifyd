@@ -8,7 +8,7 @@ asynchronous, but deliberately keeps ownership centralized: each process has
 one libuv loop, and every object that survives a callback has one explicit
 owner and one explicit release boundary.
 
-This document describes the code that exists in `daemon/src`. It is primarily
+This document describes the code that exists in `src`. It is primarily
 a lifecycle guide. File names are useful only after it is clear which object
 owns a resource and how long that resource must remain valid.
 
