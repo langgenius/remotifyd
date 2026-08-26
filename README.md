@@ -41,6 +41,16 @@ patch and file-transfer operations, and a release build of `remotifyd` is about
 old and modern machines: Windows XP, Windows 7, Windows 10/11, Linux, and
 macOS.
 
+## Long-term vision
+
+Remotify is working toward support for embedded and IoT targets such as ESP32
+and STM32. These chips are part of the roadmap, not supported release targets
+today.
+
+Our larger goal is to connect everything: workstations, legacy PCs, servers,
+industrial equipment, and embedded devices, all through one interface designed
+for AI agents.
+
 ## How it fits together
 
 ```text
