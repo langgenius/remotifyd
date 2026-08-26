@@ -27,6 +27,13 @@ a different interface.
    modify network interfaces to create an overlay network. That is unnecessary
    when an agent only needs a narrow, auditable way to run commands and change
    files on an authorized device.
+4. **Direct SSH has no team control plane.** When several people or agents need
+   to manage many machines, direct SSH connections bypass a central place to
+   attribute access, retain an operation trail, or revoke a member before the
+   next operation reaches a device. Remotify puts a team-aware management layer
+   in the path: every operation is tied to an authenticated user and Agent
+   session, device access is checked centrally, and administrators can revoke
+   that access without rotating credentials across every machine.
 
 Remotify is designed for AI agents from the protocol up. It includes dedicated
 patch and file-transfer operations, and a release build of `remotifyd` is about
