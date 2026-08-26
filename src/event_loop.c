@@ -1,6 +1,7 @@
 #include "event_loop.h"
 
 #include "api_base.h"
+#include "executor_worker_shell_locate.h"
 #include "logger.h"
 #include "websocket_eventloop.h"
 #include "websocket_send.h"
@@ -17,6 +18,11 @@ extern const size_t remotify_ca_bundle_length;
 static void schedule_connect_remotify(uv_handle_t *handle);
 
 static bool init_websocket(EventLoop *event_loop, const char *credential) {
+    static const char *const shell_headers[] = {
+        "X-Remotify-Shell-Type: sh",
+        "X-Remotify-Shell-Type: cmd",
+        "X-Remotify-Shell-Type: powershell"
+    };
     CURL *websocket = curl_easy_init();
     struct curl_slist *headers;
     char *authorization;
@@ -37,7 +43,12 @@ static bool init_websocket(EventLoop *event_loop, const char *credential) {
     /* curl_slist_append copied the complete header into its own allocation. */
     free(authorization);
 
-    if (headers == NULL) {
+    if (headers == NULL ||
+        curl_slist_append(
+            headers,
+            shell_headers[executor_worker_shell_type()]
+        ) == NULL) {
+        curl_slist_free_all(headers);
         curl_easy_cleanup(websocket);
         return false;
     }
