@@ -313,7 +313,7 @@ target_include_directories(remotify_grapheme_word
 if(NOT WIN32)
     FetchContent_Declare(
         libidn2
-        URL https://ftp.gnu.org/gnu/libidn/libidn2-2.3.7.tar.gz
+        URL https://ftpmirror.gnu.org/libidn/libidn2-2.3.7.tar.gz
         URL_HASH SHA256=4c21a791b610b9519b9d0e12b8097bf2f359b12f8dd92647611a929e6bfd7d64
         SOURCE_DIR ${CMAKE_CURRENT_SOURCE_DIR}/vendor/libidn2
     )
