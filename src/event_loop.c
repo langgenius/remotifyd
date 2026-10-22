@@ -16,6 +16,8 @@ extern const unsigned char remotify_ca_bundle[];
 extern const size_t remotify_ca_bundle_length;
 
 static void schedule_connect_remotify(uv_handle_t *handle);
+static void schedule_reconnect(EventLoop *event_loop);
+static void handshake_timeout(uv_timer_t *timer);
 
 static bool init_websocket(EventLoop *event_loop, const char *credential) {
     static const char *const shell_headers[] = {
@@ -120,7 +122,16 @@ static void cleanup_websocket(uv_timer_t *timer) {
     CURL *websocket = event_loop->websocket;
     struct curl_slist *headers = NULL;
 
+    /* A failed or completed attempt never keeps a protocol deadline. */
+    uv_timer_stop(&event_loop->handshake_timer);
+    uv_timer_stop(&event_loop->liveness_timer);
+
     if (websocket == NULL) {
+        /*
+         * A stale cleanup (for example one queued by a late socket event)
+         * must not swallow the reconnect. Always leave a fresh attempt armed.
+         */
+        schedule_reconnect(event_loop);
         return;
     }
 
@@ -157,9 +168,11 @@ static void cleanup_websocket(uv_timer_t *timer) {
     );
 }
 
-static void schedule_connect_remotify(uv_handle_t *handle) {
-    EventLoop *event_loop = handle->data;
+static void schedule_reconnect(EventLoop *event_loop) {
     int result;
+
+    uv_timer_stop(&event_loop->handshake_timer);
+    uv_timer_stop(&event_loop->liveness_timer);
 
     /* Frames owned by the previous connection are never sent after reconnect. */
     websocket_send_clear(event_loop);
@@ -181,6 +194,29 @@ static void schedule_connect_remotify(uv_handle_t *handle) {
             "failed to schedule WebSocket reconnect: %s",
             uv_strerror(result)
         );
+    }
+}
+
+static void schedule_connect_remotify(uv_handle_t *handle) {
+    schedule_reconnect(handle->data);
+}
+
+static void handshake_timeout(uv_timer_t *timer) {
+    EventLoop *event_loop = timer->data;
+
+    /*
+     * libcurl can clear its own CONNECTTIMEOUT deadline after an
+     * incomplete WebSocket upgrade without ever reporting CURLMSG_DONE.
+     * Without a daemon-owned deadline the EventLoop then has no live
+     * socket timer and the process stays online in the operating system
+     * while Remotify can never reconnect. Force the normal teardown path.
+     */
+    logf_error("WebSocket handshake timed out; reconnecting");
+
+    if (event_loop->websocket != NULL) {
+        schedule_cleanup_websocket(event_loop);
+    } else {
+        schedule_reconnect(event_loop);
     }
 }
 
@@ -217,9 +253,35 @@ void connect_remotify(uv_timer_t *timer) {
     EventLoop *event_loop = timer->data;
     int running_handles = 0;
     CURLMcode result;
+    int timer_result;
+
+    uv_timer_stop(&event_loop->handshake_timer);
+    uv_timer_stop(&event_loop->liveness_timer);
 
     if (!init_websocket(event_loop, event_loop->state.token)) {
         logf_error("failed to initialize WebSocket");
+        schedule_reconnect(event_loop);
+        return;
+    }
+
+    /*
+     * libcurl's CONNECTTIMEOUT is not sufficient here: when the WebSocket
+     * upgrade stalls it may cancel its timer without delivering a DONE
+     * message. This independent deadline guarantees another attempt.
+     */
+    timer_result = uv_timer_start(
+        &event_loop->handshake_timer,
+        handshake_timeout,
+        40000,
+        0
+    );
+
+    if (timer_result != 0) {
+        logf_error(
+            "failed to start WebSocket handshake timer: %s",
+            uv_strerror(timer_result)
+        );
+        schedule_cleanup_websocket(event_loop);
         return;
     }
 

@@ -32,6 +32,13 @@ struct EventLoop {
     /* Connection advancement, cleanup, and reconnect reuse this one timer. */
     uv_timer_t timer;
 
+    /* Independent upper bound for one WebSocket upgrade attempt. */
+    uv_timer_t handshake_timer;
+
+    /* Independent liveness deadline for an established WebSocket. */
+    uv_timer_t liveness_timer;
+    uint64_t last_rx_ms;
+
     uv_process_t executor;
     uv_pipe_t executor_input;
     uv_pipe_t executor_output;

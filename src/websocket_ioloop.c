@@ -93,6 +93,9 @@ static void websocket_read(EventLoop *event_loop) {
             return;
         }
 
+        /* Any received frame proves the connection still has a live peer. */
+        event_loop->last_rx_ms = uv_now(&event_loop->loop);
+
         if ((frame->flags & CURLWS_CLOSE) != 0) goto websocket_closed;
 
         /* libcurl answers PING automatically; neither control frame is RPC. */

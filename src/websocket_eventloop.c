@@ -102,6 +102,23 @@ void stop_websocket_resources(EventLoop *event_loop) {
             uv_poll_stop(&watch->poll);
 }
 
+static void liveness_check(uv_timer_t *timer) {
+    EventLoop *event_loop = timer->data;
+    uint64_t now = uv_now(&event_loop->loop);
+
+    /*
+     * A half-open connection is silent: writes may still be accepted by the
+     * local stack while the peer is unreachable. Without a receive deadline
+     * the daemon keeps an ESTABLISHED socket forever and the backend drops
+     * the device from presence. Treat 45 seconds without any frame as dead.
+     */
+    if (now - event_loop->last_rx_ms > 45000) {
+        uv_timer_stop(timer);
+        logf_error("WebSocket receive deadline expired; reconnecting");
+        schedule_cleanup_websocket(event_loop);
+    }
+}
+
 void check_websocket_connect_result(EventLoop *event_loop) {
     CURLMsg *message;
     CurlSocketWatch *watch;
@@ -141,6 +158,10 @@ void check_websocket_connect_result(EventLoop *event_loop) {
 
         /* Only libcurl's selected socket survives as the WebSocket watcher. */
         event_loop->websocket_watch = watch;
+
+        /* The upgrade completed: this attempt no longer needs its deadline. */
+        uv_timer_stop(&event_loop->handshake_timer);
+
         result = uv_poll_start(
             &watch->poll,
             UV_READABLE | UV_DISCONNECT,
@@ -157,6 +178,21 @@ void check_websocket_connect_result(EventLoop *event_loop) {
         }
 
         close_socket_watches_except(event_loop, watch);
+
+        event_loop->last_rx_ms = uv_now(&event_loop->loop);
+        result = uv_timer_start(
+            &event_loop->liveness_timer,
+            liveness_check,
+            10000,
+            10000
+        );
+
+        if (result != 0) {
+            logf_error(
+                "failed to start WebSocket liveness timer: %s",
+                uv_strerror(result)
+            );
+        }
 
         /*
          * Heartbeat is an application request that refreshes the authenticated

@@ -59,10 +59,24 @@ static int process_main(int argc, char **argv) {
         return EXIT_FAILURE;
     }
 
+    if (uv_timer_init(&event_loop.loop, &event_loop.handshake_timer) != 0) {
+        uv_loop_close(&event_loop.loop);
+        state_free(&event_loop.state);
+        return EXIT_FAILURE;
+    }
+
+    if (uv_timer_init(&event_loop.loop, &event_loop.liveness_timer) != 0) {
+        uv_loop_close(&event_loop.loop);
+        state_free(&event_loop.state);
+        return EXIT_FAILURE;
+    }
+
     /* Every timer is process-owned and reused for one stable responsibility. */
     event_loop.timer.data = &event_loop;
     event_loop.websocket_send_timer.data = &event_loop;
     event_loop.heartbeat_timer.data = &event_loop;
+    event_loop.handshake_timer.data = &event_loop;
+    event_loop.liveness_timer.data = &event_loop;
 
     /* The WebSocket multi handle exists before any connection is scheduled. */
     if (!init_curl_multi(&event_loop)) {
